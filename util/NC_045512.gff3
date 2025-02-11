@@ -27,6 +27,11 @@ NC_045512.2	ensembl	mRNA	25393	26220	.	+	.	ID=transcript:ENSSAST00005000006;Pare
 NC_045512.2	ensembl	exon	25393	26220	.	+	.	Parent=transcript:ENSSAST00005000006;Name=ENSSASE00005000006;constitutive=1;ensembl_end_phase=0;ensembl_phase=0;exon_id=ENSSASE00005000006;rank=1;version=1
 NC_045512.2	ensembl	CDS	25393	26220	.	+	0	ID=CDS:ENSSASP00005000006;Parent=transcript:ENSSAST00005000006;protein_id=ENSSASP00005000006
 ###
+NC_045512.2	ensembl	gene	25457	25582	.	+	.	ID=gene:ENSSASG00005000015;Name=ORF3c;biotype=protein_coding;description=ORF3c protein [Source:NCBI gene (formerly Entrezgene)%3BAcc:XXXX];gene_id=ENSSASG00005000015;logic_name=ensembl_covid;version=1
+NC_045512.2	ensembl	mRNA	25457	25582	.	+	.	ID=transcript:ENSSAST00005000015;Parent=gene:ENSSASG00005000015;Name=ORF3c;biotype=protein_coding;transcript_id=ENSSAST00005000015;version=1
+NC_045512.2	ensembl	exon	25457	25582	.	+	.	Parent=transcript:ENSSAST00005000015;Name=ENSSASE00005000015;constitutive=1;ensembl_end_phase=0;ensembl_phase=0;exon_id=ENSSASE00005000015;rank=1;version=1
+NC_045512.2	ensembl	CDS	25457	25582	.	+	0	ID=CDS:ENSSASP00005000015;Parent=transcript:ENSSAST00005000015;protein_id=ENSSASP00005000015
+###
 NC_045512.2	ensembl	gene	26245	26472	.	+	.	ID=gene:ENSSASG00005000010;Name=E;biotype=protein_coding;description=envelope protein [Source:NCBI gene (formerly Entrezgene)%3BAcc:43740570];gene_id=ENSSASG00005000010;logic_name=ensembl_covid;version=1
 NC_045512.2	ensembl	mRNA	26245	26472	.	+	.	ID=transcript:ENSSAST00005000010;Parent=gene:ENSSASG00005000010;Name=E;biotype=protein_coding;transcript_id=ENSSAST00005000010;version=1
 NC_045512.2	ensembl	exon	26245	26472	.	+	.	Parent=transcript:ENSSAST00005000010;Name=ENSSASE00005000010;constitutive=1;ensembl_end_phase=0;ensembl_phase=0;exon_id=ENSSASE00005000010;rank=1;version=1
@@ -61,6 +66,11 @@ NC_045512.2	ensembl	gene	28274	29533	.	+	.	ID=gene:ENSSASG00005000005;Name=N;bio
 NC_045512.2	ensembl	mRNA	28274	29533	.	+	.	ID=transcript:ENSSAST00005000005;Parent=gene:ENSSASG00005000005;Name=N;biotype=protein_coding;transcript_id=ENSSAST00005000005;version=1
 NC_045512.2	ensembl	exon	28274	29533	.	+	.	Parent=transcript:ENSSAST00005000005;Name=ENSSASE00005000005;constitutive=1;ensembl_end_phase=0;ensembl_phase=0;exon_id=ENSSASE00005000005;rank=1;version=1
 NC_045512.2	ensembl	CDS	28274	29533	.	+	0	ID=CDS:ENSSASP00005000005;Parent=transcript:ENSSAST00005000005;protein_id=ENSSASP00005000005
+###
+NC_045512.2	ensembl	gene	28284	28577	.	+	.	ID=gene:ENSSASG00005000014;Name=ORF9b;biotype=protein_coding;description=ORF9b protein [Source:NCBI gene (formerly Entrezgene)%3BAcc:XXXX];gene_id=ENSSASG00005000014;logic_name=ensembl_covid;version=1
+NC_045512.2	ensembl	mRNA	28284	28577	.	+	.	ID=transcript:ENSSAST00005000014;Parent=gene:ENSSASG00005000014;Name=ORF9b;biotype=protein_coding;transcript_id=ENSSAST00005000014;version=1
+NC_045512.2	ensembl	exon	28284	28577	.	+	.	Parent=transcript:ENSSAST00005000014;Name=ENSSASE00005000014;constitutive=1;ensembl_end_phase=0;ensembl_phase=0;exon_id=ENSSASE00005000014;rank=1;version=1
+NC_045512.2	ensembl	CDS	28284	28577	.	+	0	ID=CDS:ENSSASP00005000014;Parent=transcript:ENSSAST00005000014;protein_id=ENSSASP00005000014
 ###
 NC_045512.2	ensembl	gene	29558	29674	.	+	.	ID=gene:ENSSASG00005000013;Name=ORF10;biotype=protein_coding;description=ORF10 protein [Source:NCBI gene (formerly Entrezgene)%3BAcc:43740576];gene_id=ENSSASG00005000013;logic_name=ensembl_covid;version=1
 NC_045512.2	ensembl	mRNA	29558	29674	.	+	.	ID=transcript:ENSSAST00005000013;Parent=gene:ENSSASG00005000013;Name=ORF10;biotype=protein_coding;transcript_id=ENSSAST00005000013;version=1

@@ -4,24 +4,34 @@
 @author: github.com/charlesfoster
 """
 
-import os
-import shutil
-import re
-from random import randrange
-import subprocess
-import argparse
-import sys
-import pandas as pd
-from cyvcf2 import VCF, Writer
-import matplotlib.pyplot as plt
+"""
+vartracker: Track the persistence (or loss) of mutations during long-term passaging.
+"""
 
-plt.rcdefaults()
-import string
-import seaborn as sns
+# Standard library imports
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
 from bisect import bisect_right
-import numpy as np
 from itertools import dropwhile
+from random import randrange
+import string
+
+# Third-party imports
+import numpy as np
+import pandas as pd
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import seaborn as sns
+from cyvcf2 import VCF, Writer
 from argparse_formatter import FlexiFormatter
+
+# Global configuration for plotting
+plt.rcdefaults()
+mpl.rcParams['pdf.fonttype'] = 42
 
 # logo
 logo = '''
@@ -112,7 +122,7 @@ nsps = {
     "product": [
         "nsp1",
         "nsp2",
-        "nsp3",
+        "nsp3_PLpro",
         "nsp4_TM",
         "nsp5_3CLpro",
         "nsp6_TM",
@@ -414,15 +424,6 @@ class AminoAcidChange:
                 "C",
                 "A",
                 "G",
-                "M",
-                "F",
-                "Y",
-                "W",
-                "H",
-                "K",
-                "T",
-                "X",
-                "-",
             ],
             "Polar": [
                 "Y",
@@ -584,100 +585,102 @@ def process_vcf(VCF_IN, covs):
         first_appearance = samples[presence_absence.index("Y")]
         last_appearance = samples[rindex(presence_absence, "Y")]
         if "BCSQ" in info.keys():
-            anno = v.INFO["BCSQ"].split(",")[0].split("|")
-            if len(anno) == 1 and anno[0].startswith("@") == True:
-                result = {
-                    "chrom": v.CHROM,
-                    "start": v.start + 1,
-                    "end": v.end,
-                    "gene": anno[0],
-                    "ref": v.REF,
-                    "alt": v.ALT[0],
-                    "variant": v.REF + str(v.POS) + v.ALT[0],
-                    "amino_acid_consequence": anno[0],
-                    "nsp_aa_change": anno[0],
-                    "bcsq_nt_notation": anno[0],
-                    "bcsq_aa_notation": anno[0],
-                    "type_of_variant": v.var_type,
-                    "type_of_change": anno[0],
-                    "variant_status": variant_status,
-                    "persistence_status": persistent_status,
-                    "presence_absence": " / ".join(presence_absence),
-                    "first_appearance": first_appearance,
-                    "last_appearance": last_appearance,
-                    "overall_variant_qc": overall_variant_qc,
-                    "per_sample_variant_qc": " / ".join(depths_qc["variant_qc"]),
-                    "aa1_total_properties": anno[0],
-                    "aa2_total_properties": anno[0],
-                    "aa1_unique_properties": anno[0],
-                    "aa2_unique_properties": anno[0],
-                    "aa1_weight": anno[0],
-                    "aa2_weight": anno[0],
-                    "weight_difference": anno[0],
-                    "alt_freq": " / ".join(allele_freqs),
-                    "variant_depth": " / ".join(depths_qc["variant_depth"]),
-                    "variant_site_depth": " / ".join(depths_qc["site_depth"]),
-                    "variant_window_depth": " / ".join(depths_qc["window_depth"]),
-                    "samples": " / ".join(samples),
-                    "total_genome_coverage": " / ".join(total_cov_list),
-                }
-            else:
-                reformatted_nt = (
-                    reformat_csq_notation(None, anno[6])
-                    if len(anno) > 5
-                    else [v.REF + str(v.POS) + v.ALT[0], ""]
-                )
-                reformatted_aa = (
-                    reformat_csq_notation(anno[1], anno[5])
-                    if len(anno) > 5
-                    else [anno[1] + ":" + anno[0], ""]
-                )
-                aa_exploration = AminoAcidChange(reformatted_aa[0].replace("*", ""))
+            annotations = v.INFO["BCSQ"].split(",")
+            for annot in annotations:
+                anno = annot.split("|")
+                if len(anno) == 1 and anno[0].startswith("@") == True:
+                    result = {
+                        "chrom": v.CHROM,
+                        "start": v.start + 1,
+                        "end": v.end,
+                        "gene": anno[0],
+                        "ref": v.REF,
+                        "alt": v.ALT[0],
+                        "variant": v.REF + str(v.POS) + v.ALT[0],
+                        "amino_acid_consequence": anno[0],
+                        "nsp_aa_change": anno[0],
+                        "bcsq_nt_notation": anno[0],
+                        "bcsq_aa_notation": anno[0],
+                        "type_of_variant": v.var_type,
+                        "type_of_change": anno[0],
+                        "variant_status": variant_status,
+                        "persistence_status": persistent_status,
+                        "presence_absence": " / ".join(presence_absence),
+                        "first_appearance": first_appearance,
+                        "last_appearance": last_appearance,
+                        "overall_variant_qc": overall_variant_qc,
+                        "per_sample_variant_qc": " / ".join(depths_qc["variant_qc"]),
+                        "aa1_total_properties": anno[0],
+                        "aa2_total_properties": anno[0],
+                        "aa1_unique_properties": anno[0],
+                        "aa2_unique_properties": anno[0],
+                        "aa1_weight": anno[0],
+                        "aa2_weight": anno[0],
+                        "weight_difference": anno[0],
+                        "alt_freq": " / ".join(allele_freqs),
+                        "variant_depth": " / ".join(depths_qc["variant_depth"]),
+                        "variant_site_depth": " / ".join(depths_qc["site_depth"]),
+                        "variant_window_depth": " / ".join(depths_qc["window_depth"]),
+                        "samples": " / ".join(samples),
+                        "total_genome_coverage": " / ".join(total_cov_list),
+                    }
+                else:
+                    reformatted_nt = (
+                        reformat_csq_notation(None, anno[6])
+                        if len(anno) > 5
+                        else [v.REF + str(v.POS) + v.ALT[0], ""]
+                    )
+                    reformatted_aa = (
+                        reformat_csq_notation(anno[1], anno[5])
+                        if len(anno) > 5
+                        else [anno[1] + ":" + anno[0], ""]
+                    )
+                    aa_exploration = AminoAcidChange(reformatted_aa[0].replace("*", ""))
 
-                result = {
-                    "chrom": v.CHROM,
-                    "start": v.start + 1,
-                    "end": v.end,
-                    "gene": anno[1],
-                    "ref": v.REF,
-                    "alt": v.ALT[0],
-                    "variant": v.REF + str(v.POS) + v.ALT[0],
-                    "amino_acid_consequence": reformatted_aa[0],
-                    "nsp_aa_change": reformatted_aa[1],
-                    "bcsq_nt_notation": anno[6] if len(anno) > 5 else "",
-                    "bcsq_aa_notation": anno[5] if len(anno) > 5 else "",
-                    "type_of_variant": v.var_type,
-                    "type_of_change": anno[0],
-                    "variant_status": variant_status,
-                    "persistence_status": persistent_status,
-                    "presence_absence": " / ".join(presence_absence),
-                    "first_appearance": first_appearance,
-                    "last_appearance": last_appearance,
-                    "overall_variant_qc": overall_variant_qc,
-                    "per_sample_variant_qc": " / ".join(depths_qc["variant_qc"]),
-                    "aa1_total_properties": ";".join(
-                        aa_exploration.aa1_total_properties
-                    ),
-                    "aa2_total_properties": ";".join(
-                        aa_exploration.aa2_total_properties
-                    ),
-                    "aa1_unique_properties": ";".join(
-                        aa_exploration.aa1_unique_properties
-                    ),
-                    "aa2_unique_properties": ";".join(
-                        aa_exploration.aa2_unique_properties
-                    ),
-                    "aa1_weight": aa_exploration.aa1_weight,
-                    "aa2_weight": aa_exploration.aa2_weight,
-                    "weight_difference": aa_exploration.weight_difference,
-                    "alt_freq": " / ".join(allele_freqs),
-                    "variant_depth": " / ".join(depths_qc["variant_depth"]),
-                    "variant_site_depth": " / ".join(depths_qc["site_depth"]),
-                    "variant_window_depth": " / ".join(depths_qc["window_depth"]),
-                    "samples": " / ".join(samples),
-                    "total_genome_coverage": " / ".join(total_cov_list),
-                }
-            results.append(result)
+                    result = {
+                        "chrom": v.CHROM,
+                        "start": v.start + 1,
+                        "end": v.end,
+                        "gene": anno[1],
+                        "ref": v.REF,
+                        "alt": v.ALT[0],
+                        "variant": v.REF + str(v.POS) + v.ALT[0],
+                        "amino_acid_consequence": reformatted_aa[0],
+                        "nsp_aa_change": reformatted_aa[1],
+                        "bcsq_nt_notation": anno[6] if len(anno) > 5 else "",
+                        "bcsq_aa_notation": anno[5] if len(anno) > 5 else "",
+                        "type_of_variant": v.var_type,
+                        "type_of_change": anno[0],
+                        "variant_status": variant_status,
+                        "persistence_status": persistent_status,
+                        "presence_absence": " / ".join(presence_absence),
+                        "first_appearance": first_appearance,
+                        "last_appearance": last_appearance,
+                        "overall_variant_qc": overall_variant_qc,
+                        "per_sample_variant_qc": " / ".join(depths_qc["variant_qc"]),
+                        "aa1_total_properties": ";".join(
+                            aa_exploration.aa1_total_properties
+                        ),
+                        "aa2_total_properties": ";".join(
+                            aa_exploration.aa2_total_properties
+                        ),
+                        "aa1_unique_properties": ";".join(
+                            aa_exploration.aa1_unique_properties
+                        ),
+                        "aa2_unique_properties": ";".join(
+                            aa_exploration.aa2_unique_properties
+                        ),
+                        "aa1_weight": aa_exploration.aa1_weight,
+                        "aa2_weight": aa_exploration.aa2_weight,
+                        "weight_difference": aa_exploration.weight_difference,
+                        "alt_freq": " / ".join(allele_freqs),
+                        "variant_depth": " / ".join(depths_qc["variant_depth"]),
+                        "variant_site_depth": " / ".join(depths_qc["site_depth"]),
+                        "variant_window_depth": " / ".join(depths_qc["window_depth"]),
+                        "samples": " / ".join(samples),
+                        "total_genome_coverage": " / ".join(total_cov_list),
+                    }
+                results.append(result)
         else:
             # continue
             if v.start + 1 < 266:
@@ -729,14 +732,23 @@ def process_vcf(VCF_IN, covs):
 def process_joint_variants(path):
     tab = pd.read_csv(path)
     tab = tab.assign(joint_variant=False)
-    idx = tab[tab["bcsq_aa_notation"].str.startswith("@")].index
+    
+    # Get indices where bcsq_aa_notation starts with "@"
+    idx = tab[tab["bcsq_aa_notation"].str.startswith("@", na=False)].index
+    
+    # If no joint variants, return the table as is
+    if idx.empty:
+        return tab
+    
     for i in idx:
         # find the main pos and main index number
         main_pos = int(tab.loc[i]["bcsq_aa_notation"].replace("@", ""))
         j = tab[tab["start"] == main_pos].index[0]
+        
         # update the joint variant key
         tab.at[i, "joint_variant"] = True
         tab.at[j, "joint_variant"] = True
+        
         # assign the main position's value to the other variant
         tab.at[i, "gene"] = tab.at[j, "gene"]
         tab.at[i, "amino_acid_consequence"] = tab.at[j, "amino_acid_consequence"]
@@ -752,9 +764,9 @@ def process_joint_variants(path):
         tab.at[i, "aa1_weight"] = tab.at[j, "aa1_weight"]
         tab.at[i, "aa2_weight"] = tab.at[j, "aa2_weight"]
         tab.at[i, "weight_difference"] = tab.at[j, "weight_difference"]
+    
     tab.to_csv(path, index=None)
     return tab
-
 
 def get_total_passage_mutations(row):
     colsum = sum(
@@ -795,13 +807,14 @@ def generate_cumulative_lineplot(table, pname, sample_number_list, outname):
     f.fig.suptitle(t=title, weight="bold")
     plt.savefig(outname, dpi=300)
 
-
 def generate_gene_table(table):
+    # Original reference gene lengths
     ref_gene_lengths = {
         "5' UTR": 265,
         "ORF1ab": 21291,
         "S": 3822,
         "ORF3a": 828,
+        "ORF3c": 126,
         "E": 228,
         "M": 669,
         "ORF6": 186,
@@ -809,6 +822,97 @@ def generate_gene_table(table):
         "ORF7b": 132,
         "ORF8": 366,
         "N": 1260,
+        "ORF9b": 294,
+        "ORF10": 117,
+        "3' UTR": 228,
+        "INTERGENIC": 1,
+    }
+
+    # Calculate lengths for nsps from the global nsps dict
+    nsp_lengths = {}
+    for nsp_name, start, end in zip(nsps["product"], nsps["nt_start"], nsps["nt_end"]):
+        nsp_lengths[nsp_name] = end - start + 1
+
+    # Combine gene sets: canonical genes + nsps
+    all_genes = list(ref_gene_lengths.keys()) 
+    all_genes.extend(nsps["product"])
+
+    change_types = table["type_of_change"].unique()
+
+    # A helper function to make rows for a single gene (or nsp)
+    def make_gene_rows(gene, df):
+        gene_result = []
+        for ctype in change_types:
+            if ctype == "None":
+                continue
+            count = len(df[df["type_of_change"] == ctype])
+            gene_result.append({"gene": gene, "type": ctype, "number": count})
+
+        new_muts_count = len([x for x in df["presence_absence"] if x.startswith("N")]) if not df.empty else 0
+        persistent_count = len([x for x in df["presence_absence"] if x.startswith("N") and x.endswith("Y")]) if not df.empty else 0
+        total_count = sum(r["number"] for r in gene_result)
+        
+        length = ref_gene_lengths.get(gene) if gene in ref_gene_lengths else nsp_lengths.get(gene, 1)
+        per_kb = (total_count / length) * 1000 if length else 0
+        new_per_kb = (new_muts_count / length) * 1000 if length else 0
+
+        gene_result.append({"gene": gene, "type": "total", "number": total_count})
+        gene_result.append({"gene": gene, "type": "new_mutations", "number": new_muts_count})
+        gene_result.append({"gene": gene, "type": "persistent_mutations", "number": persistent_count})
+        gene_result.append({"gene": gene, "type": "mutations_per_kb", "number": per_kb})
+        gene_result.append({"gene": gene, "type": "new_mutations_per_kb", "number": new_per_kb})
+
+        return pd.DataFrame(gene_result)
+
+    # First, do the original genes
+    result = []
+    genes_in_table = table["gene"].unique()
+    for gene in genes_in_table:
+        if gene == "INTERGENIC":
+            continue
+        df = table[table["gene"] == gene]
+        result.append(make_gene_rows(gene, df))
+
+    # Add nsps: subsets of ORF1ab
+    # Assign ORF1ab variants to nsps if possible
+    def assign_nsp(row):
+        if row["gene"] == "ORF1ab" and row["nsp_aa_change"] and ":" in row["nsp_aa_change"]:
+            return row["nsp_aa_change"].split(":")[0]
+        else:
+            return None
+
+    table["nsp_gene"] = table.apply(assign_nsp, axis=1)
+    orf_df = table[table["gene"] == "ORF1ab"]
+    for nsp_gene_name in nsps["product"]:
+        nsp_df = orf_df[orf_df["nsp_gene"] == nsp_gene_name]
+        result.append(make_gene_rows(nsp_gene_name, nsp_df))
+
+    gene_table = pd.concat(result, ignore_index=True)
+
+    # Create a scaffold to ensure all genes and nsps appear even if zero variants.
+    all_types = gene_table["type"].unique()
+    scaffold = pd.DataFrame([(g, t) for g in all_genes for t in all_types], columns=["gene", "type"])
+
+    gene_table = scaffold.merge(gene_table, on=["gene", "type"], how="left")
+    gene_table["number"] = gene_table["number"].fillna(0)
+
+    return gene_table
+
+def generate_gene_table_old(table):
+    ref_gene_lengths = {
+        "5' UTR": 265,
+        "ORF1ab": 21291,
+        "S": 3822,
+        "ORF3a": 828,
+        "ORF3c": 126,
+        "E": 228,
+        "M": 669,
+        "ORF6": 186,
+        "ORF7a": 366,
+        "ORF7b": 132,
+        "ORF8": 366,
+        "N": 1260,
+        "ORF9b": 294,
         "ORF10": 117,
         "3' UTR": 228,
         "INTERGENIC": 1,
@@ -868,7 +972,6 @@ def generate_gene_table(table):
         result.append(pd.DataFrame(gene_result))
     return pd.concat(result)
 
-
 def plot_gene_table(gene_table, pname, outdir):
     g = sns.catplot(
         x="gene",
@@ -883,21 +986,33 @@ def plot_gene_table(gene_table, pname, outdir):
     g.set_axis_labels("", "Number of Mutations")
     g.fig.subplots_adjust(top=0.9)
     g.fig.suptitle(f"{pname}", weight="bold")
+
+    # Rotate labels by 90 degrees
     for ax in g.axes.flat:
         for label in ax.get_xticklabels():
-            label.set_rotation(45)
-    for ax, title in zip(g.fig.axes, list(gene_table.type.unique())):
+            label.set_rotation(90)
+
+    # Make subplot titles nicer
+    for ax, title in zip(g.fig.axes, list(gene_table["type"].unique())):
         ax.set_title(string.capwords(title.replace("_", " ")))
+
     plt.savefig(os.path.join(outdir, "mutations_per_gene.pdf"), dpi=300)
 
-
-def search_pokay(table, pokay, outdir):
+def search_pokay(table, pokay, outdir, pokay_name, debug = False):
     print("Searching 'pokay' database to find significant mutations...\n")
     collector = []
     for _, row in table.iterrows():
         gene = row["gene"]
         mut = row["amino_acid_consequence"]
-        gdf = pokay[(pokay.gene == gene) & (pokay.mutation.str.contains(mut))]
+        if gene == "ORF1ab":
+            search_gene = row['nsp_aa_change'].split(":")[0].split("_")[0]
+            search_mut = row["nsp_aa_change"].split(":")[1]
+        else:
+            search_gene = gene
+            search_mut = mut
+        if debug:
+            print(f"Searching: {search_gene} {search_mut}")
+        gdf = pokay[(pokay.gene == search_gene) & (pokay.mutation.str.contains(search_mut))]
         if len(gdf) == 0:
             row["key_mutation"] = None
             row["database_mutation_string"] = None
@@ -913,9 +1028,12 @@ def search_pokay(table, pokay, outdir):
                 r["category"] = gdf.iloc[i]["category"]
                 r["prior_information"] = re.sub("^ +", "", gdf.iloc[i]["information"])
                 r["reference"] = gdf.iloc[i]["reference"]
+                if gene == "ORF1ab":
+                    r["gene"] = search_gene
+                    r["amino_acid_consequence"] = search_mut
                 collector.append(r)
     # make output with all info
-    merged = pd.DataFrame(collector)
+    merged = pd.DataFrame(collector).drop_duplicates()
     key_muts = merged.loc[merged["key_mutation"] == True]
     to_keep = [
         "gene",
@@ -930,7 +1048,7 @@ def search_pokay(table, pokay, outdir):
         reformatted1.insert(0, "name", reformatted1.pop("name"))
     else:
         reformatted1 = key_muts[to_keep]
-    fname1 = os.path.join(outdir, "pokay_database_hits.full.csv")
+    fname1 = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.full.csv")
     reformatted1.to_csv(fname1, index=None)
     # make output with concise info
     merged = pd.DataFrame(collector)
@@ -958,13 +1076,14 @@ def search_pokay(table, pokay, outdir):
         y = list(set(y))
         l.append("; ".join(y))
     reformatted["reference"] = l
-    fname = os.path.join(outdir, "pokay_database_hits.concise.csv")
+    fname = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.concise.csv")
     reformatted.drop_duplicates().to_csv(fname, index=None)
     # print stats
     genes = len(reformatted["amino_acid_consequence"].unique())
     hits = len(reformatted["category"])
     print(f"{genes} new amino acid changes had hits to {hits} categories")
     print(f"See: {fname}")
+    return(reformatted1)
 
 
 def main(sysargs=sys.argv[1:]):
@@ -1232,7 +1351,12 @@ def main(sysargs=sys.argv[1:]):
     # search for new mutations in functional database
     if not args.skip_search:
         # search for importance of new mutations
-        search_pokay(table, pokay, outdir)
+        new_mutations = table[table['variant_status'] == 'new']
+        if args.name is None:
+            pokay_name = "sample"
+        else:
+            pokay_name = args.name
+        x = search_pokay(new_mutations, pokay, outdir, pokay_name, debug = debug)
 
     if not args.keep_temp:
         shutil.rmtree(tempdir)
