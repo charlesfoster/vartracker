@@ -1,0 +1,37 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check-yaml
+        name: Check YAML files
+        entry: scripts/check_yaml.py
+        language: system
+        files: "\\.ya?ml$"
+      - id: check-toml
+        name: Check TOML files
+        entry: scripts/check_toml.py
+        language: system
+        files: "\\.toml$"
+      - id: end-of-file-fixer
+        name: Ensure newline at EOF
+        entry: scripts/fix_eof.py
+        language: system
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+        entry: scripts/check_trailing_whitespace.py
+        language: system
+      - id: black
+        name: Black
+        entry: black
+        language: system
+        types: [python]
+        args: ["--line-length=88"]
+      - id: flake8
+        name: Flake8
+        entry: flake8
+        language: system
+        types: [python]
+      - id: mypy
+        name: mypy
+        entry: mypy
+        language: system
+        types: [python]

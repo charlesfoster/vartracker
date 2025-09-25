@@ -1,0 +1,12 @@
+include README.md
+include LICENSE
+include pyproject.toml
+recursive-include vartracker/data *.fasta
+recursive-include vartracker/data *.fai
+recursive-include vartracker/data *.gff3
+recursive-include vartracker/data *.txt
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude * *.orig
+recursive-exclude * *.rej
+recursive-exclude * *.pyc
