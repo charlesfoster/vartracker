@@ -13,6 +13,6 @@ __author__ = "Dr Charles Foster"
 __email__ = "github.com/charlesfoster"
 
 from .main import main
-from .core import *
+from .core import *  # noqa: F401,F403
 
 __all__ = ["__version__", "main"]

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vartracker"
-version = "1.0.1"
+version = "1.0.2"
 authors = [
     {name = "Dr Charles Foster"},
 ]
@@ -15,7 +15,7 @@ description = "Track the persistence (or loss) of mutations during long-term pas
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Science/Research",
@@ -74,9 +74,12 @@ test = ["pytest", "pytest-cov"]
 [tool.hatch.build.targets.wheel]
 packages = ["vartracker"]
 
+[tool.hatch.build.targets.sdist.force-include]
+"vartracker/test_data" = "vartracker/test_data"
+
 [tool.black]
 line-length = 88
-target-version = ['py38']
+target-version = ['py310']
 include = '\.pyi?$'
 
 [tool.flake8]

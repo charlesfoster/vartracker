@@ -189,6 +189,7 @@ options:
                         Path to a pre-parsed pokay database CSV file
   --search-pokay        Run literature lookups against the pokay database
   --download-pokay      Automatically download and parse the pokay database
+  --test                Run vartracker against the bundled demonstration dataset
   -f, --filename FILENAME
                         Output file name (default: results.csv)
   -r, --reference REFERENCE
@@ -201,6 +202,19 @@ options:
                         INFO tag name for allele frequency (default: AF)
   -V, --version         show program's version number and exit
 ```
+
+### Installation Test
+
+After installation you can verify the full pipeline using the bundled
+demonstration dataset:
+
+```bash
+vartracker --test --outdir vartracker_test_results
+```
+
+This command runs vartracker end-to-end with packaged inputs, producing outputs
+in the specified directory and confirming that external dependencies (such as
+bcftools) are available.
 
 ## Output
 

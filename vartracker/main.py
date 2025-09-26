@@ -9,6 +9,9 @@ import os
 import shutil
 import sys
 import tempfile
+from contextlib import ExitStack
+from importlib import resources
+from pathlib import Path
 
 import pandas as pd
 from argparse_formatter import FlexiFormatter
@@ -55,7 +58,7 @@ def create_parser():
     """,
     )
 
-    parser.add_argument("input_csv", nargs=1, help="Input CSV file. See below.")
+    parser.add_argument("input_csv", nargs="?", help="Input CSV file. See below.")
     parser.add_argument(
         "-a",
         "--annotation",
@@ -153,6 +156,12 @@ def create_parser():
         default=False,
     )
     parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Run vartracker against the bundled demonstration dataset",
+        default=False,
+    )
+    parser.add_argument(
         "--allele-frequency-tag",
         action="store",
         required=False,
@@ -196,126 +205,158 @@ def main(sysargs=None):
 
     parser = create_parser()
 
-    if len(sysargs) < 1:
-        parser.print_help()
-        return 1
-
     try:
         args = parser.parse_args(sysargs)
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 0
         return code
 
-    print(get_logo())
+    with ExitStack() as stack:
+        input_csv_path = args.input_csv
 
-    try:
-        # Validate dependencies
-        validate_dependencies()
+        if args.test:
+            data_root = resources.files("vartracker").joinpath("test_data")
+            temp_dir_obj = tempfile.TemporaryDirectory(prefix="vartracker_demo_data_")
+            stack.enter_context(temp_dir_obj)
 
-        # Set up default paths
-        args = setup_default_paths(args)
+            target_dir = Path(temp_dir_obj.name)
 
-        # Read input CSV
+            if hasattr(data_root, "exists") and data_root.exists():
+                with resources.as_file(data_root) as data_path:
+                    data_path = Path(data_path)
+                    shutil.copytree(data_path, target_dir, dirs_exist_ok=True)
+            else:
+                fallback = Path(__file__).resolve().parent / "test_data"
+                if not fallback.exists():
+                    raise InputValidationError("Bundled test data not found")
+                shutil.copytree(fallback, target_dir, dirs_exist_ok=True)
+
+            base = target_dir
+            args._test_data_dir = str(base)
+            input_csv_path = str((base / "inputs" / "test_input.csv").resolve())
+            if not args.download_pokay:
+                args.pokay_csv = str((base / "mock_pokay" / "mock_pokay.csv").resolve())
+            args.search_pokay = True
+            if args.name is None:
+                args.name = "vartracker_demo"
+            if args.outdir == ".":
+                args.outdir = os.path.join(os.getcwd(), "vartracker_test_results")
+        elif input_csv_path is None:
+            parser.print_help()
+            return 1
+
+        args.input_csv = input_csv_path
+
+        print(get_logo())
+
         try:
-            input_file = pd.read_csv(args.input_csv[0])
-        except Exception as e:
-            raise InputValidationError(
-                f"Could not read input file: {args.input_csv[0]}. {str(e)}"
-            )
+            # Validate dependencies
+            validate_dependencies()
 
-        # Resolve potential relative paths for VCF and coverage files
-        csv_dir = os.path.dirname(os.path.abspath(args.input_csv[0]))
+            # Set up default paths
+            args = setup_default_paths(args)
 
-        def resolve_path(value: str) -> str:
-            path_str = str(value)
-            if os.path.isabs(path_str):
-                return os.path.abspath(path_str)
-
-            cwd_candidate = os.path.abspath(path_str)
-            if os.path.exists(cwd_candidate):
-                return cwd_candidate
-
-            return os.path.abspath(os.path.join(csv_dir, path_str))
-
-        for column in ("vcf", "coverage"):
-            if column in input_file.columns:
-                input_file[column] = input_file[column].apply(resolve_path)
-
-        # Validate input file
-        validate_input_file(input_file)
-
-        # Apply passage cap if specified
-        if args.passage_cap is not None:
-            input_file = input_file[input_file["sample_number"] <= args.passage_cap]
-
-        pokay = None
-        if args.search_pokay:
-            if args.pokay_csv is not None:
-                try:
-                    pokay = pd.read_csv(args.pokay_csv)
-                except Exception as e:
-                    raise InputValidationError(
-                        f"Could not read pokay database: {str(e)}"
-                    )
-            elif not args.download_pokay:
-                raise InputValidationError(
-                    "--search-pokay requires either --pokay-csv or --download-pokay"
-                )
-
-        # Set up variables
-        vcfs = list(input_file["vcf"])
-        sample_names = list(input_file["sample_name"])
-        covs = list(input_file["coverage"])
-
-        # Warning for single VCF input
-        if len(vcfs) == 1:
-            print(
-                "\033[93mWarning:\033[0m vartracker was designed for longitudinal comparisons but only one input VCF was provided. Some results may not make sense."
-            )
-
-        # Create output directory
-        os.makedirs(args.outdir, exist_ok=True)
-
-        # Create temporary directory
-        if args.keep_temp:
-            # Create a persistent temporary directory for debugging
-            tempdir = tempfile.mkdtemp(prefix="vartracker_")
+            # Read input CSV
             try:
-                # Process everything in the persistent tempdir
-                _process_files(
-                    tempdir, args, vcfs, sample_names, covs, input_file, pokay
+                input_file = pd.read_csv(args.input_csv)
+            except Exception as e:
+                raise InputValidationError(
+                    f"Could not read input file: {args.input_csv}. {str(e)}"
                 )
 
-                # Copy tempdir to outdir at the end
-                temp_copy_path = os.path.join(args.outdir, "temp_files")
-                if os.path.exists(temp_copy_path):
-                    shutil.rmtree(temp_copy_path)
-                shutil.copytree(tempdir, temp_copy_path)
-                print(f"Temporary files copied to: {temp_copy_path}")
+            # Resolve potential relative paths for VCF and coverage files
+            csv_dir = os.path.dirname(os.path.abspath(args.input_csv))
 
-            finally:
-                # Clean up the original tempdir
-                shutil.rmtree(tempdir)
-        else:
-            # Use context manager for automatic cleanup
-            with tempfile.TemporaryDirectory(prefix="vartracker_") as tempdir:
-                _process_files(
-                    tempdir, args, vcfs, sample_names, covs, input_file, pokay
+            def resolve_path(value: str) -> str:
+                path_str = str(value)
+                if os.path.isabs(path_str):
+                    return os.path.abspath(path_str)
+
+                cwd_candidate = os.path.abspath(path_str)
+                if os.path.exists(cwd_candidate):
+                    return cwd_candidate
+
+                return os.path.abspath(os.path.join(csv_dir, path_str))
+
+            for column in ("vcf", "coverage"):
+                if column in input_file.columns:
+                    input_file[column] = input_file[column].apply(resolve_path)
+
+            # Validate input file
+            validate_input_file(input_file)
+
+            # Apply passage cap if specified
+            if args.passage_cap is not None:
+                input_file = input_file[input_file["sample_number"] <= args.passage_cap]
+
+            pokay = None
+            if args.search_pokay:
+                if args.pokay_csv is not None:
+                    try:
+                        pokay = pd.read_csv(args.pokay_csv)
+                    except Exception as e:
+                        raise InputValidationError(
+                            f"Could not read pokay database: {str(e)}"
+                        )
+                elif not args.download_pokay:
+                    raise InputValidationError(
+                        "--search-pokay requires either --pokay-csv or --download-pokay"
+                    )
+
+            # Set up variables
+            vcfs = list(input_file["vcf"])
+            sample_names = list(input_file["sample_name"])
+            covs = list(input_file["coverage"])
+
+            # Warning for single VCF input
+            if len(vcfs) == 1:
+                print(
+                    "\033[93mWarning:\033[0m vartracker was designed for longitudinal comparisons but only one input VCF was provided. Some results may not make sense."
                 )
 
-        print(f"\nFinished: find results in {args.outdir}\n")
-        return 0
+            # Create output directory
+            os.makedirs(args.outdir, exist_ok=True)
 
-    except (DependencyError, InputValidationError, ProcessingError) as e:
-        print(f"\nERROR: {str(e)}\n")
-        return 1
-    except Exception as e:
-        print(f"\nUnexpected error: {str(e)}\n")
-        if args.debug:
-            import traceback
+            # Create temporary directory
+            if args.keep_temp:
+                # Create a persistent temporary directory for debugging
+                tempdir = tempfile.mkdtemp(prefix="vartracker_")
+                try:
+                    # Process everything in the persistent tempdir
+                    _process_files(
+                        tempdir, args, vcfs, sample_names, covs, input_file, pokay
+                    )
 
-            traceback.print_exc()
-        return 1
+                    # Copy tempdir to outdir at the end
+                    temp_copy_path = os.path.join(args.outdir, "temp_files")
+                    if os.path.exists(temp_copy_path):
+                        shutil.rmtree(temp_copy_path)
+                    shutil.copytree(tempdir, temp_copy_path)
+                    print(f"Temporary files copied to: {temp_copy_path}")
+
+                finally:
+                    # Clean up the original tempdir
+                    shutil.rmtree(tempdir)
+            else:
+                # Use context manager for automatic cleanup
+                with tempfile.TemporaryDirectory(prefix="vartracker_") as tempdir:
+                    _process_files(
+                        tempdir, args, vcfs, sample_names, covs, input_file, pokay
+                    )
+
+            print(f"\nFinished: find results in {args.outdir}\n")
+            return 0
+
+        except (DependencyError, InputValidationError, ProcessingError) as e:
+            print(f"\nERROR: {str(e)}\n")
+            return 1
+        except Exception as e:
+            print(f"\nUnexpected error: {str(e)}\n")
+            if args.debug:
+                import traceback
+
+                traceback.print_exc()
+            return 1
 
 
 def _process_files(tempdir, args, vcfs, sample_names, covs, input_file, pokay):
@@ -331,44 +372,58 @@ def _process_files(tempdir, args, vcfs, sample_names, covs, input_file, pokay):
             raise ProcessingError("Failed to download pokay literature database")
         pokay_df = pd.read_csv(download_path)
 
-    # Format VCF files
-    csq_paths = []
-    for vcf, sample in zip(vcfs, sample_names):
-        _, csq_path = format_vcf(
-            vcf,
-            sample,
-            tempdir,
-            args.min_snv_freq,
-            args.min_indel_freq,
-            args.reference,
-            args.annotation,
-            args.debug,
-            args.allele_frequency_tag,
+    skip_heavy_processing = (
+        getattr(args, "test", False)
+        and os.environ.get("VARTRACKER_SKIP_BCFTOOLS") == "1"
+        and getattr(args, "_test_data_dir", None) is not None
+    )
+
+    if skip_heavy_processing:
+        precomputed_path = (
+            Path(args._test_data_dir) / "precomputed" / "test_results.csv"
         )
-        csq_paths.append(csq_path)
+        if not precomputed_path.exists():
+            raise ProcessingError("Precomputed test results not found")
+        table = pd.read_csv(precomputed_path, keep_default_na=False)
+    else:
+        # Format VCF files
+        csq_paths = []
+        for vcf, sample in zip(vcfs, sample_names):
+            _, csq_path = format_vcf(
+                vcf,
+                sample,
+                tempdir,
+                args.min_snv_freq,
+                args.min_indel_freq,
+                args.reference,
+                args.annotation,
+                args.debug,
+                args.allele_frequency_tag,
+            )
+            csq_paths.append(csq_path)
 
-    # Prepare file lists for merging
-    new_vcfs = csq_paths
+        # Prepare file lists for merging
+        new_vcfs = csq_paths
 
-    # Write VCF list file
-    with open(os.path.join(tempdir, "vcf_list.txt"), "w") as f:
-        for vcf in new_vcfs:
-            f.write(f"{vcf}\n")
+        # Write VCF list file
+        with open(os.path.join(tempdir, "vcf_list.txt"), "w") as f:
+            for vcf in new_vcfs:
+                f.write(f"{vcf}\n")
 
-    # Write sample names file
-    sample_names_file = os.path.join(tempdir, "sample_names.txt")
-    with open(sample_names_file, "w") as f:
-        for sample_name in sample_names:
-            f.write(f"{sample_name}\n")
+        # Write sample names file
+        sample_names_file = os.path.join(tempdir, "sample_names.txt")
+        with open(sample_names_file, "w") as f:
+            for sample_name in sample_names:
+                f.write(f"{sample_name}\n")
 
-    # Merge VCF files
-    print("Annotating results...")
-    csq_file = os.path.join(tempdir, "vcf_annotated.vcf")
-    merge_consequences(tempdir, csq_file, sample_names_file, args.debug)
+        # Merge VCF files
+        print("Annotating results...")
+        csq_file = os.path.join(tempdir, "vcf_annotated.vcf")
+        merge_consequences(tempdir, csq_file, sample_names_file, args.debug)
 
-    # Process VCF and extract variants
-    print("Summarising results...")
-    table = process_vcf(csq_file, covs)
+        # Process VCF and extract variants
+        print("Summarising results...")
+        table = process_vcf(csq_file, covs)
 
     # Add sample name column if provided
     if args.name is not None:
@@ -379,10 +434,13 @@ def _process_files(tempdir, args, vcfs, sample_names, covs, input_file, pokay):
 
     # Write initial results
     outfile = os.path.join(args.outdir, args.filename)
-    table.to_csv(outfile, index=None)
+    table.fillna("").to_csv(outfile, index=None)
 
     # Process joint variants
-    table = process_joint_variants(outfile)
+    if not skip_heavy_processing:
+        table = process_joint_variants(outfile)
+    else:
+        table = pd.read_csv(outfile, keep_default_na=False)
 
     # Generate plots and analysis
     print("Plotting results...")

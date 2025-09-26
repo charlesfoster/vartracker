@@ -3,17 +3,19 @@
 from argparse import Namespace
 from unittest import mock
 
+import importlib
 import pandas as pd
 import pytest
 
 from vartracker.core import DependencyError
-from vartracker.main import setup_default_paths, validate_dependencies
+
+main_module = importlib.import_module("vartracker.main")
 
 
 def test_setup_default_paths_uses_package_defaults():
     args = Namespace(reference=None, annotation=None)
 
-    updated = setup_default_paths(args)
+    updated = main_module.setup_default_paths(args)
 
     assert updated.reference.endswith("NC_045512.fasta")
     assert updated.annotation.endswith("NC_045512.gff3")
@@ -22,27 +24,28 @@ def test_setup_default_paths_uses_package_defaults():
 def test_setup_default_paths_preserves_explicit_values():
     args = Namespace(reference="/tmp/custom.fasta", annotation="/tmp/custom.gff3")
 
-    updated = setup_default_paths(args)
+    updated = main_module.setup_default_paths(args)
 
     assert updated.reference == "/tmp/custom.fasta"
     assert updated.annotation == "/tmp/custom.gff3"
 
 
-@mock.patch(
-    "vartracker.main.check_dependencies", return_value={"bcftools": True, "tabix": True}
+@mock.patch.object(
+    main_module, "check_dependencies", return_value={"bcftools": True, "tabix": True}
 )
 def test_validate_dependencies_passes_when_available(mock_check):
-    validate_dependencies()
+    main_module.validate_dependencies()
     mock_check.assert_called_once()
 
 
-@mock.patch(
-    "vartracker.main.check_dependencies",
+@mock.patch.object(
+    main_module,
+    "check_dependencies",
     return_value={"bcftools": False, "tabix": True},
 )
 def test_validate_dependencies_raises_when_missing(mock_check):
     with pytest.raises(DependencyError, match="Missing required tools: bcftools"):
-        validate_dependencies()
+        main_module.validate_dependencies()
     mock_check.assert_called_once()
 
 
@@ -62,9 +65,6 @@ NC_045512.2\t266\t.\tA\tC\t.\tPASS\tDP=10;VAF=0.5
 
 
 def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
-    import importlib
-
-    main_module = importlib.import_module("vartracker.main")
     coverage_path = tmp_path / "sample.cov.txt"
     coverage_path.write_text("NC_045512.2\t266\t100\n", encoding="utf-8")
 
