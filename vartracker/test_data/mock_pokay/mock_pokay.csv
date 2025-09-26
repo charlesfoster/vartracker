@@ -1,0 +1,6 @@
+gene,category,mutation,information,reference
+E,category_1,T30I,Explanation text for this variant and category,https://doi.org/10.1101/2021.05.19.444774 ; https://doi.org/10.1093/emph/eoac010]
+S,category_1,N74K,Explanation text for this variant and category,https://doi.org/10.1101/2021.05.19.444774 ; https://doi.org/10.1093/emph/eoac010]
+S,category_1,H655Y,Explanation text for this variant and category,https://doi.org/10.1101/2021.05.19.444774 ; https://doi.org/10.1093/emph/eoac010]
+nsp6,category_1,L37F,Explanation text for this variant and category,https://doi.org/10.1016/j.meegid.2020.104351 ; https://doi.org/10.1007/s00415-020-10197-8 ; https://doi.org/10.1016/j.tig.2020.08.014 ; https://doi.org/10.48550/arXiv.2007.01344 ; https://doi.org/10.1016/j.heliyon.2020.e04658
+S,category_2,H655Y,Explanation text for this variant and category,https://doi.org/10.1101/2021.03.24.436850

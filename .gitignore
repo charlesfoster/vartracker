@@ -107,9 +107,11 @@ Temporary Items
 .apdisk
 
 # Project specific
-*.vcf
-*.vcf.gz
-*.csv
 results/
 examples/
 vartracker_test_results/
+
+# Always include bundled demo data used by --test
+!vartracker/test_data/
+!vartracker/test_data/**
+vartracker/test_data/**/.DS_Store
