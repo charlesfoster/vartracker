@@ -111,6 +111,5 @@ Temporary Items
 *.vcf.gz
 *.csv
 results/
-test_data/
 examples/
 vartracker_test_results/
