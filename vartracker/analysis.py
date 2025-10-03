@@ -150,7 +150,9 @@ def generate_cumulative_lineplot(table, pname, sample_number_list, outname):
         raise RuntimeError(f"Error generating cumulative line plot: {str(e)}")
 
 
-def generate_gene_table(table):
+def generate_gene_table(
+    table: pd.DataFrame, gene_lengths: Dict[str, int] | None = None
+):
     """
     Generate gene-wise mutation statistics table.
 
@@ -161,8 +163,13 @@ def generate_gene_table(table):
         pd.DataFrame: Gene statistics table
     """
     # Combine gene sets: canonical genes + nsps
-    all_genes = list(REF_GENE_LENGTHS.keys())
-    all_genes.extend(NSPS["product"])
+    source_gene_lengths = gene_lengths or REF_GENE_LENGTHS
+    all_genes = list(source_gene_lengths.keys())
+    include_nsps = gene_lengths is None
+    nsp_products: List[str] = []
+    if include_nsps:
+        nsp_products = list(cast(Sequence[str], NSPS.get("product", [])))
+        all_genes.extend(nsp_products)
 
     change_types = table["type_of_change"].unique()
 
@@ -195,7 +202,7 @@ def generate_gene_table(table):
 
         total_count = sum(r["number"] for r in gene_result)
 
-        length = REF_GENE_LENGTHS.get(gene, NSP_LENGTHS.get(gene, 1))
+        length = source_gene_lengths.get(gene, NSP_LENGTHS.get(gene, 1))
         per_kb = (total_count / length) * 1000 if length else 0
         new_per_kb = (new_muts_count / length) * 1000 if length else 0
 
@@ -225,23 +232,25 @@ def generate_gene_table(table):
         df = table[table["gene"] == gene]
         result.append(make_gene_rows(gene, df))
 
-    # Add NSPs: subsets of ORF1ab
-    def assign_nsp(row):
-        if (
-            row["gene"] == "ORF1ab"
-            and row["nsp_aa_change"]
-            and ":" in str(row["nsp_aa_change"])
-        ):
-            return row["nsp_aa_change"].split(":")[0]
-        return None
+    if include_nsps:
+        table = table.copy()
 
-    table = table.copy()  # Avoid modifying original table
-    table["nsp_gene"] = table.apply(assign_nsp, axis=1)
-    orf_df = table[table["gene"] == "ORF1ab"]
+        def assign_nsp(row):
+            if (
+                row["gene"] == "ORF1ab"
+                and row["nsp_aa_change"]
+                and ":" in str(row["nsp_aa_change"])
+            ):
+                return row["nsp_aa_change"].split(":")[0]
+            return None
 
-    for nsp_gene_name in NSPS["product"]:
-        nsp_df = orf_df[orf_df["nsp_gene"] == nsp_gene_name]
-        result.append(make_gene_rows(nsp_gene_name, nsp_df))
+        table["nsp_gene"] = table.apply(assign_nsp, axis=1)
+        orf_df = table[table["gene"] == "ORF1ab"]
+
+        for nsp_gene_name in nsp_products:
+            nsp_df = orf_df[orf_df["nsp_gene"] == nsp_gene_name]
+            if not nsp_df.empty:
+                result.append(make_gene_rows(nsp_gene_name, nsp_df))
 
     if not result:
         return pd.DataFrame()
@@ -307,19 +316,26 @@ def plot_gene_table(gene_table, pname, outdir):
         raise RuntimeError(f"Error plotting gene table: {str(e)}")
 
 
-def _build_gene_order_map() -> Tuple[Dict[str, int], List[str]]:
+def _build_gene_order_map(
+    gene_lengths: Dict[str, int] | None = None,
+    include_nsps: bool = True,
+) -> Tuple[Dict[str, int], List[str]]:
     """Build an ordered mapping of genes (and NSPs) following 5' to 3'."""
-    order: List[str] = ["5' UTR"]
 
-    nsp_products = cast(Sequence[str], NSPS.get("product", []))
+    order: List[str] = []
 
-    for gene in nsp_products:
-        order.append(gene)
+    if gene_lengths is None:
+        order.append("5' UTR")
+        if include_nsps:
+            nsp_products = cast(Sequence[str], NSPS.get("product", []))
+            order.extend(nsp_products)
 
-    for gene in REF_GENE_LENGTHS.keys():
-        if gene in {"5' UTR", "ORF1ab"}:
-            continue
-        order.append(gene)
+        for gene in REF_GENE_LENGTHS.keys():
+            if gene in {"5' UTR", "ORF1ab"}:
+                continue
+            order.append(gene)
+    else:
+        order.extend(gene_lengths.keys())
 
     # Ensure unique ordering while preserving sequence
     seen = set()
@@ -330,10 +346,8 @@ def _build_gene_order_map() -> Tuple[Dict[str, int], List[str]]:
             seen.add(gene)
 
     gene_order_map = {gene: idx for idx, gene in enumerate(unique_order)}
-    if "nsp1" in gene_order_map:
+    if include_nsps and "nsp1" in gene_order_map:
         gene_order_map.setdefault("ORF1ab", gene_order_map["nsp1"])
-    else:
-        gene_order_map.setdefault("ORF1ab", len(gene_order_map))
 
     # Fallback bucket for anything unexpected
     gene_order_map.setdefault("INTERGENIC", len(gene_order_map))
@@ -462,6 +476,7 @@ def _prepare_variant_heatmap_matrix(
     sample_names: Sequence[str],
     min_snv_freq: float,
     min_indel_freq: float,
+    gene_lengths: Dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """Prepare a matrix of allele frequencies for heatmap plotting."""
     if not isinstance(table, pd.DataFrame) or table.empty:
@@ -476,7 +491,9 @@ def _prepare_variant_heatmap_matrix(
             s.strip() for s in str(table.iloc[0]["samples"]).split(" / ")
         ]
 
-    gene_order_map, _ = _build_gene_order_map()
+    gene_order_map, _ = _build_gene_order_map(
+        gene_lengths, include_nsps=gene_lengths is None
+    )
 
     records: List[Dict[str, Union[str, float, int]]] = []
     seen_labels = set()
@@ -552,12 +569,13 @@ def generate_variant_heatmap(
     project_name: str,
     min_snv_freq: float,
     min_indel_freq: float,
+    gene_lengths: Dict[str, int] | None = None,
 ):
     """Generate a heatmap of variant allele frequencies across passages."""
 
     try:
         heatmap_data = _prepare_variant_heatmap_matrix(
-            table, sample_names, min_snv_freq, min_indel_freq
+            table, sample_names, min_snv_freq, min_indel_freq, gene_lengths
         )
         if heatmap_data.empty:
             print("No variant data available for heatmap; skipping plot.")

@@ -36,6 +36,10 @@ from .analysis import (
 )
 from ._version import __version__
 from .data import parse_pokay as parse_pokay_module
+from .annotation_processing import (
+    gene_lengths_from_gff3,
+    validate_reference_and_annotation,
+)
 
 
 def create_parser():
@@ -211,6 +215,8 @@ def main(sysargs=None):
         code = exc.code if isinstance(exc.code, int) else 0
         return code
 
+    annotation_supplied = args.annotation is not None
+
     with ExitStack() as stack:
         input_csv_path = args.input_csv
 
@@ -255,6 +261,22 @@ def main(sysargs=None):
 
             # Set up default paths
             args = setup_default_paths(args)
+
+            try:
+                validate_reference_and_annotation(args.reference, args.annotation)
+            except ValueError as exc:
+                raise InputValidationError(str(exc)) from exc
+
+            gene_lengths_override = None
+            if annotation_supplied:
+                try:
+                    gene_lengths_override = gene_lengths_from_gff3(args.annotation)
+                except (
+                    Exception
+                ) as exc:  # pragma: no cover - parsing errors surfaced to user
+                    raise InputValidationError(
+                        f"Failed to parse annotation file '{args.annotation}': {exc}"
+                    ) from exc
 
             # Read input CSV
             try:
@@ -324,7 +346,14 @@ def main(sysargs=None):
                 try:
                     # Process everything in the persistent tempdir
                     _process_files(
-                        tempdir, args, vcfs, sample_names, covs, input_file, pokay
+                        tempdir,
+                        args,
+                        vcfs,
+                        sample_names,
+                        covs,
+                        input_file,
+                        pokay,
+                        gene_lengths_override,
                     )
 
                     # Copy tempdir to outdir at the end
@@ -341,7 +370,14 @@ def main(sysargs=None):
                 # Use context manager for automatic cleanup
                 with tempfile.TemporaryDirectory(prefix="vartracker_") as tempdir:
                     _process_files(
-                        tempdir, args, vcfs, sample_names, covs, input_file, pokay
+                        tempdir,
+                        args,
+                        vcfs,
+                        sample_names,
+                        covs,
+                        input_file,
+                        pokay,
+                        gene_lengths_override,
                     )
 
             print(f"\nFinished: find results in {args.outdir}\n")
@@ -359,7 +395,16 @@ def main(sysargs=None):
             return 1
 
 
-def _process_files(tempdir, args, vcfs, sample_names, covs, input_file, pokay):
+def _process_files(
+    tempdir,
+    args,
+    vcfs,
+    sample_names,
+    covs,
+    input_file,
+    pokay,
+    gene_lengths,
+):
     """Process files in the given temporary directory."""
     print("Pre-processing VCF files for compatibility...")
 
@@ -423,7 +468,7 @@ def _process_files(tempdir, args, vcfs, sample_names, covs, input_file, pokay):
 
         # Process VCF and extract variants
         print("Summarising results...")
-        table = process_vcf(csq_file, covs)
+        table = process_vcf(csq_file, covs, sample_names)
 
     # Add sample name column if provided
     if args.name is not None:
@@ -451,7 +496,7 @@ def _process_files(tempdir, args, vcfs, sample_names, covs, input_file, pokay):
         os.path.join(args.outdir, "cumulative_mutations.pdf"),
     )
 
-    gene_table = generate_gene_table(table)
+    gene_table = generate_gene_table(table, gene_lengths)
     plot_gene_table(gene_table, pname, args.outdir)
     generate_variant_heatmap(
         table,
@@ -461,6 +506,7 @@ def _process_files(tempdir, args, vcfs, sample_names, covs, input_file, pokay):
         pname,
         args.min_snv_freq,
         args.min_indel_freq,
+        gene_lengths=gene_lengths,
     )
 
     # Write specialized tables

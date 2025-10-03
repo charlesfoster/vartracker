@@ -76,7 +76,16 @@ def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
     )
 
     monkeypatch.setattr(main_module, "validate_dependencies", lambda: None)
-    monkeypatch.setattr(main_module, "setup_default_paths", lambda args: args)
+
+    def fake_setup(args):
+        args.reference = "/tmp/mock_reference.fasta"
+        args.annotation = "/tmp/mock_annotation.gff3"
+        return args
+
+    monkeypatch.setattr(main_module, "setup_default_paths", fake_setup)
+    monkeypatch.setattr(
+        main_module, "validate_reference_and_annotation", lambda *a, **k: None
+    )
     monkeypatch.setattr(
         main_module, "generate_cumulative_lineplot", lambda *a, **k: None
     )
@@ -84,7 +93,9 @@ def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
     monkeypatch.setattr(
         main_module, "process_joint_variants", lambda path: pd.read_csv(path)
     )
-    monkeypatch.setattr(main_module, "generate_gene_table", lambda table: table)
+    monkeypatch.setattr(
+        main_module, "generate_gene_table", lambda table, *_a, **_k: table
+    )
     monkeypatch.setattr(main_module, "plot_gene_table", lambda *a, **k: None)
     monkeypatch.setattr(main_module, "search_pokay", lambda *a, **k: None)
 
