@@ -46,6 +46,7 @@ dependencies = [
     "cyvcf2>=0.30.0",
     "argparse-formatter>=1.4",
     "urlextract>=1.9.0",
+    "snakemake>=9",
 ]
 
 [project.urls]

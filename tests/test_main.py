@@ -126,9 +126,77 @@ def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
 
     exit_code = main_module.main(
         [
+            "vcf",
             str(csv_path),
             "--name",
             "Example",
+        ]
+    )
+
+    assert exit_code == 0
+
+
+def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
+    updated_csv = tmp_path / "samples_updated.csv"
+    updated_csv.write_text("vcf,coverage,sample_name,sample_number\n", encoding="utf-8")
+
+    recorded = {}
+
+    def fake_workflow(**kwargs):
+        recorded["workflow_kwargs"] = kwargs
+        return str(updated_csv)
+
+    monkeypatch.setattr(main_module, "run_e2e_workflow", fake_workflow)
+
+    def fake_vcf(args):
+        recorded["vcf_input"] = args.input_csv
+        return 0
+
+    monkeypatch.setattr(main_module, "_run_vcf_command", fake_vcf)
+
+    exit_code = main_module.main(
+        [
+            "end-to-end",
+            "--samples",
+            "reads.csv",
+            "--reference",
+            "ref.fasta",
+            "--snakemake-outdir",
+            str(tmp_path / "snakemake"),
+            "--outdir",
+            str(tmp_path / "results"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["workflow_kwargs"]["samples_csv"] == "reads.csv"
+    assert recorded["workflow_kwargs"]["force_all"] is False
+    assert recorded["workflow_kwargs"]["quiet"] is True
+    assert recorded["vcf_input"] == str(updated_csv)
+
+
+def test_e2e_dryrun_skips_vcf(monkeypatch):
+    def fake_workflow(**kwargs):
+        assert kwargs["force_all"] is True
+        assert kwargs["quiet"] is True
+        return None
+
+    monkeypatch.setattr(main_module, "run_e2e_workflow", fake_workflow)
+
+    def fake_vcf(_):
+        raise AssertionError("VCF pipeline should not run during dry-run")
+
+    monkeypatch.setattr(main_module, "_run_vcf_command", fake_vcf)
+
+    exit_code = main_module.main(
+        [
+            "end-to-end",
+            "--samples",
+            "reads.csv",
+            "--reference",
+            "ref.fasta",
+            "--snakemake-dryrun",
+            "--redo",
         ]
     )
 

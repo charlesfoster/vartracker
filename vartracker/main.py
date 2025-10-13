@@ -5,6 +5,7 @@ Contains the main function and argument parsing for the vartracker command-line 
 """
 
 import argparse
+import copy
 import os
 import shutil
 import sys
@@ -16,6 +17,7 @@ from pathlib import Path
 import pandas as pd
 from argparse_formatter import FlexiFormatter
 
+from .analysis_launcher import run_workflow as run_e2e_workflow
 from .core import (
     get_logo,
     get_package_data_path,
@@ -42,33 +44,18 @@ from .annotation_processing import (
 )
 
 
-def create_parser():
-    """Create and return the argument parser."""
-    parser = argparse.ArgumentParser(
-        description="vartracker: track the persistence (or not) of mutations during long-term passaging",
-        usage="vartracker [options] <input_csv>",
-        formatter_class=FlexiFormatter,
-        epilog="""
-    The input CSV file should have four columns:
-    1. 'vcf': full paths to bgzipped vcf files containing the called variants for each sample of interest
-    2. 'coverage': full paths to files containing the genome coverage for each sample. The coverage files should be in the format output by `bedtools genomecov` (e.g., bedtools genomecov -ibam input.bam -d > coverage.txt), whereby the columns are (in order): the reference name, the 1-based position in the genome, and the depth of coverage at that position.
-    3. 'sample_name': the name of the sample in the given VCF file
-    4. 'sample_number': the sample number. In a longitudinal comparison like long-term passaging, the numbers in the column might go 0, 1, 2, ..., 15.
+def _configure_vcf_parser(
+    parser: argparse.ArgumentParser, *, include_input_csv: bool
+) -> None:
+    if include_input_csv:
+        parser.add_argument("input_csv", nargs="?", help="Input CSV file")
 
-    Note: the order of values in the input CSV file matters, dictating the order of results in the output CSV file.
-
-    If 'new mutations' are to be searched against the functional 'pokay' database (default) (see vartracker repository README), the path to
-    the parsed pokay csv file must be provided.
-    """,
-    )
-
-    parser.add_argument("input_csv", nargs="?", help="Input CSV file. See below.")
     parser.add_argument(
         "-a",
         "--annotation",
         action="store",
         required=False,
-        default=None,  # Will be set to package data if None
+        default=None,
         help="Annotations to use in GFF3 format (default: uses packaged SARS-CoV-2 annotations)",
     )
     parser.add_argument(
@@ -103,7 +90,7 @@ def create_parser():
         action="store",
         required=False,
         default=".",
-        help="Output directory (default: current directory)",
+        help="Output directory for vartracker results (default: current directory)",
     )
     parser.add_argument(
         "-f",
@@ -118,7 +105,7 @@ def create_parser():
         "--reference",
         action="store",
         required=False,
-        default=None,  # Will be set to package data if None
+        default=None,
         help="Reference genome (default: uses packaged SARS-CoV-2 reference)",
     )
     parser.add_argument(
@@ -172,9 +159,73 @@ def create_parser():
         default="AF",
         help="INFO tag name for allele frequency (default: AF)",
     )
+
+
+def _add_vcf_subparser(subparsers):
+    description = (
+        "Analyse VCF-based longitudinal variant data, generating reports and plots."
+    )
+    vcf_parser = subparsers.add_parser(
+        "vcf",
+        help="Analyse VCF inputs",
+        description=description,
+        formatter_class=FlexiFormatter,
+        epilog="""
+The input CSV file should have four columns:
+1. 'vcf': full paths to bgzipped VCF files containing the called variants for each sample of interest
+2. 'coverage': full paths to files containing the genome coverage for each sample. The coverage files should
+   be in the format output by `bedtools genomecov` (e.g., `bedtools genomecov -ibam input.bam -d > coverage.txt`).
+3. 'sample_name': the name of the sample in the given VCF file
+4. 'sample_number': the sample number. In a longitudinal comparison like long-term passaging, the numbers in the column
+   might go 0, 1, 2, ..., 15.
+
+Note: the order of values in the input CSV file matters, dictating the order of results in the output CSV file.
+
+If 'new mutations' are to be searched against the functional 'pokay' database (default) (see vartracker repository README),
+the path to the parsed pokay csv file must be provided.
+""",
+    )
+
+    _configure_vcf_parser(vcf_parser, include_input_csv=True)
+
+    vcf_parser.set_defaults(handler=_run_vcf_command)
+
+
+def _add_placeholder_subcommand(
+    subparsers, name: str, aliases: tuple[str, ...] = ()
+) -> None:
+    help_text = f"Placeholder for upcoming '{name}' functionality"
+    parser = subparsers.add_parser(
+        name,
+        help=help_text,
+        aliases=list(aliases),
+        description=f"The '{name}' workflow is not yet implemented.",
+    )
+
+    def _handler(_args):
+        print(
+            f"Subcommand '{name}' is not yet implemented. Please use 'vartracker vcf' for current functionality."
+        )
+        return 1
+
+    parser.set_defaults(handler=_handler)
+
+
+def create_parser():
+    """Create and return the top-level argument parser with subcommands."""
+
+    parser = argparse.ArgumentParser(
+        description="vartracker: track the persistence (or not) of mutations during long-term passaging",
+        formatter_class=FlexiFormatter,
+    )
     parser.add_argument(
         "-V", "--version", action="version", version=f"%(prog)s {__version__}"
     )
+
+    subparsers = parser.add_subparsers(dest="command")
+    _add_vcf_subparser(subparsers)
+    _add_placeholder_subcommand(subparsers, "bam")
+    _add_e2e_subparser(subparsers)
 
     return parser
 
@@ -203,7 +254,7 @@ def setup_default_paths(args):
 
 
 def main(sysargs=None):
-    """Main function for vartracker."""
+    """Entry point for the vartracker CLI."""
     if sysargs is None:
         sysargs = sys.argv[1:]
 
@@ -215,6 +266,15 @@ def main(sysargs=None):
         code = exc.code if isinstance(exc.code, int) else 0
         return code
 
+    handler = getattr(args, "handler", None)
+    if handler is None:
+        parser.print_help()
+        return 1
+
+    return handler(args)
+
+
+def _run_vcf_command(args):
     annotation_supplied = args.annotation is not None
 
     with ExitStack() as stack:
@@ -248,7 +308,10 @@ def main(sysargs=None):
             if args.outdir == ".":
                 args.outdir = os.path.join(os.getcwd(), "vartracker_test_results")
         elif input_csv_path is None:
-            parser.print_help()
+            print(
+                "ERROR: Missing required argument: input_csv.\n"
+                "Usage: vartracker vcf <input_csv> [options]"
+            )
             return 1
 
         args.input_csv = input_csv_path
@@ -382,7 +445,6 @@ def main(sysargs=None):
 
             print(f"\nFinished: find results in {args.outdir}\n")
             return 0
-
         except (DependencyError, InputValidationError, ProcessingError) as e:
             print(f"\nERROR: {str(e)}\n")
             return 1
@@ -393,6 +455,85 @@ def main(sysargs=None):
 
                 traceback.print_exc()
             return 1
+
+
+def _add_e2e_subparser(subparsers):
+    description = "Run the Snakemake-based end-to-end pipeline and post-process results with vartracker."
+    e2e_parser = subparsers.add_parser(
+        "end-to-end",
+        help="Run the end-to-end workflow (Snakemake + vartracker)",
+        description=description,
+        formatter_class=FlexiFormatter,
+        aliases=["e2e"],
+    )
+
+    _configure_vcf_parser(e2e_parser, include_input_csv=False)
+
+    e2e_parser.add_argument(
+        "--samples",
+        required=True,
+        help="Path to read sample metadata CSV for the Snakemake workflow",
+    )
+    e2e_parser.add_argument(
+        "--snakemake-outdir",
+        default=None,
+        help="Output directory for Snakemake artefacts (default: use --outdir)",
+    )
+    e2e_parser.add_argument(
+        "--cores",
+        type=int,
+        default=8,
+        help="Number of cores for Snakemake execution (default: 8)",
+    )
+    e2e_parser.add_argument(
+        "--primer-bed",
+        help="Optional primer BED file for amplicon clipping in Snakemake",
+    )
+    e2e_parser.add_argument(
+        "--snakemake-dryrun",
+        action="store_true",
+        help="Perform a Snakemake dry-run and skip vartracker analysis",
+        default=False,
+    )
+    e2e_parser.add_argument(
+        "--redo",
+        action="store_true",
+        help="Force Snakemake to recompute all targets (forceall)",
+        default=False,
+    )
+
+    e2e_parser.set_defaults(handler=_run_e2e_command)
+
+
+def _run_e2e_command(args):
+    args = setup_default_paths(args)
+
+    snakemake_outdir = args.snakemake_outdir or args.outdir
+
+    updated_csv = run_e2e_workflow(
+        samples_csv=args.samples,
+        reference=args.reference,
+        outdir=snakemake_outdir,
+        cores=args.cores,
+        primer_bed=args.primer_bed,
+        dryrun=args.snakemake_dryrun,
+        force_all=args.redo,
+        quiet=not args.debug,
+    )
+
+    if args.snakemake_dryrun:
+        return 0
+
+    if not updated_csv or not os.path.exists(updated_csv):
+        raise ProcessingError(
+            "End-to-end workflow did not produce the expected updated sample sheet"
+        )
+
+    vcf_args = copy.deepcopy(args)
+    vcf_args.input_csv = updated_csv
+    vcf_args.command = "vcf"
+
+    return _run_vcf_command(vcf_args)
 
 
 def _process_files(

@@ -26,6 +26,7 @@ def test_cli_test_flag_runs_successfully(tmp_path):
         sys.executable,
         "-m",
         "vartracker.main",
+        "vcf",
         "--test",
         "--outdir",
         str(outdir),

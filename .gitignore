@@ -110,6 +110,7 @@ Temporary Items
 results/
 examples/
 vartracker_test_results/
+vartracker_results/
 
 # Always include bundled demo data used by --test
 !vartracker/test_data/
