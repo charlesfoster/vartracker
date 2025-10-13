@@ -31,6 +31,7 @@ def run_workflow(
     dryrun: bool = False,
     force_all: bool = False,
     quiet: bool = True,
+    mode: str = "reads",
 ) -> Optional[str]:
     """Run the lofreq variant calling workflow via the Snakemake API.
 
@@ -58,6 +59,7 @@ def run_workflow(
         "samples_csv": samples_csv,
         "reference": reference,
         "outdir": outdir,
+        "mode": mode,
     }
     if primer_bed_path:
         config_dict["primer_bed"] = primer_bed_path
@@ -70,11 +72,14 @@ def run_workflow(
 
     # Snakemake v8 expects an *iterable* of Quietness enums (or None),
     # not a bare bool. Convert our boolean to the canonical set.
-    quiet_setting = {Quietness.PROGRESS, Quietness.RULES} if quiet else None
+    quiet_setting = frozenset({Quietness.ALL}) if quiet else None
+
+    print("Deploying analysis with snakemake...")
 
     try:
         with SnakemakeApi(
             OutputSettings(
+                dryrun=dryrun,
                 quiet=quiet_setting,
                 printshellcmds=not quiet,
             )
@@ -101,10 +106,11 @@ def run_workflow(
         print("\n✓ Dry run completed. No jobs were executed.")
         return None
 
-    print("\n✓ Workflow completed successfully!")
+    print("✓ Snakemake workflow completed successfully!")
     print(f"Results are in: {outdir}/")
     updated_csv = str(Path(outdir) / "vartracker_execution_spreadsheet.csv")
-    print(f"Updated sample sheet: {updated_csv}")
+    print(f"Updated sample sheet: {updated_csv}\n")
+    print("Running vartracker summary workflow...")
     return updated_csv
 
 

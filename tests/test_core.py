@@ -54,42 +54,56 @@ class TestValidateInputFile:
 
     def test_valid_input_file(self):
         """Test validation with a valid input file."""
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".vcf", delete=False
-        ) as vcf_temp:
-            vcf_temp.write("dummy content")
-            vcf_path = vcf_temp.name
+        with (
+            tempfile.NamedTemporaryFile(
+                mode="w", suffix=".vcf", delete=False
+            ) as vcf_temp,
+            tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False
+            ) as cov_temp,
+            tempfile.NamedTemporaryFile(
+                mode="w", suffix=".fq", delete=False
+            ) as r1_temp,
+            tempfile.NamedTemporaryFile(
+                mode="w", suffix=".fq", delete=False
+            ) as r2_temp,
+            tempfile.NamedTemporaryFile(
+                mode="w", suffix=".bam", delete=False
+            ) as bam_temp,
+        ):
+            for handle in (vcf_temp, cov_temp, r1_temp, r2_temp, bam_temp):
+                handle.write("dummy content")
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False
-        ) as cov_temp:
-            cov_temp.write("dummy content")
-            cov_path = cov_temp.name
-
-        try:
             df = pd.DataFrame(
                 {
-                    "vcf": [vcf_path],
-                    "coverage": [cov_path],
                     "sample_name": ["sample1"],
                     "sample_number": [0],
+                    "reads1": [r1_temp.name],
+                    "reads2": [r2_temp.name],
+                    "bam": [bam_temp.name],
+                    "vcf": [vcf_temp.name],
+                    "coverage": [cov_temp.name],
                 }
             )
 
             # Should not raise any exception
             validate_input_file(df)
-        finally:
-            # Cleanup
-            os.unlink(vcf_path)
-            os.unlink(cov_path)
+
+        for path in (
+            vcf_temp.name,
+            cov_temp.name,
+            r1_temp.name,
+            r2_temp.name,
+            bam_temp.name,
+        ):
+            os.unlink(path)
 
     def test_missing_columns(self):
         """Test validation with missing required columns."""
         df = pd.DataFrame(
             {
-                "vcf": ["test.vcf"],
-                "coverage": ["test.txt"],
-                # Missing sample_name and sample_number
+                "sample_name": ["sample1"],
+                "sample_number": [0],
             }
         )
 
@@ -100,10 +114,13 @@ class TestValidateInputFile:
         """Test validation with empty values in required columns."""
         df = pd.DataFrame(
             {
-                "vcf": ["test.vcf"],
-                "coverage": [None],  # Empty value
                 "sample_name": ["sample1"],
                 "sample_number": [0],
+                "reads1": [""],
+                "reads2": ["reads2.fastq"],
+                "bam": ["sample1.bam"],
+                "vcf": ["sample1.vcf"],
+                "coverage": ["sample1_coverage.txt"],
             }
         )
 
@@ -114,10 +131,13 @@ class TestValidateInputFile:
         """Test validation with non-existent files."""
         df = pd.DataFrame(
             {
-                "vcf": ["/nonexistent/file.vcf"],
-                "coverage": ["/nonexistent/file.txt"],
                 "sample_name": ["sample1"],
                 "sample_number": [0],
+                "reads1": ["/nonexistent/reads1.fastq"],
+                "reads2": ["/nonexistent/reads2.fastq"],
+                "bam": ["/nonexistent/sample1.bam"],
+                "vcf": ["/nonexistent/file.vcf"],
+                "coverage": ["/nonexistent/file.txt"],
             }
         )
 

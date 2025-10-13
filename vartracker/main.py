@@ -45,20 +45,28 @@ from .annotation_processing import (
 
 
 def _configure_vcf_parser(
-    parser: argparse.ArgumentParser, *, include_input_csv: bool
+    parser: argparse.ArgumentParser,
+    *,
+    include_input_csv: bool,
+    input_csv_required: bool = False,
 ) -> None:
     if include_input_csv:
-        parser.add_argument("input_csv", nargs="?", help="Input CSV file")
+        if input_csv_required:
+            parser.add_argument("input_csv", help="Input CSV file")
+        else:
+            parser.add_argument("input_csv", nargs="?", help="Input CSV file")
 
-    parser.add_argument(
-        "-a",
-        "--annotation",
+    vt_group = parser.add_argument_group("Vartracker options")
+
+    vt_group.add_argument(
+        "-g",
+        "--gff3",
         action="store",
         required=False,
         default=None,
-        help="Annotations to use in GFF3 format (default: uses packaged SARS-CoV-2 annotations)",
+        help="GFF3 annotations to use (default: packaged SARS-CoV-2 annotations)",
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "-m",
         "--min-snv-freq",
         action="store",
@@ -67,7 +75,7 @@ def _configure_vcf_parser(
         default=0.03,
         help="Minimum allele frequency of SNV variants to keep (default: 0.03)",
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "-M",
         "--min-indel-freq",
         action="store",
@@ -76,7 +84,16 @@ def _configure_vcf_parser(
         default=0.1,
         help="Minimum allele frequency of indel variants to keep (default: 0.1)",
     )
-    parser.add_argument(
+    vt_group.add_argument(
+        "-d",
+        "--min-depth",
+        action="store",
+        required=False,
+        type=int,
+        default=10,
+        help="Minimum depth threshold for variant QC (default: 10)",
+    )
+    vt_group.add_argument(
         "-n",
         "--name",
         action="store",
@@ -84,7 +101,7 @@ def _configure_vcf_parser(
         default=None,
         help="Optional: add a column to results with the name specified here",
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "-o",
         "--outdir",
         action="store",
@@ -92,7 +109,7 @@ def _configure_vcf_parser(
         default=".",
         help="Output directory for vartracker results (default: current directory)",
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "-f",
         "--filename",
         action="store",
@@ -100,7 +117,7 @@ def _configure_vcf_parser(
         default="results.csv",
         help="Output file name (default: results.csv)",
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "-r",
         "--reference",
         action="store",
@@ -108,51 +125,51 @@ def _configure_vcf_parser(
         default=None,
         help="Reference genome (default: uses packaged SARS-CoV-2 reference)",
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "--passage-cap",
         action="store",
         type=int,
         help="Cap the number of passages at this number",
         default=None,
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "--debug",
         action="store_true",
         help="Print commands being run for debugging",
         default=False,
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "--keep-temp",
         action="store_true",
         help="Keep temporary files for debugging",
         default=False,
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "--pokay-csv",
         action="store",
         required=False,
         default=None,
         help="Path to a pre-parsed pokay CSV file",
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "--search-pokay",
         action="store_true",
         help="Run literature search against the pokay database.",
         default=False,
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "--download-pokay",
         action="store_true",
         help="Automatically download and parse the pokay literature database.",
         default=False,
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "--test",
         action="store_true",
         help="Run vartracker against the bundled demonstration dataset",
         default=False,
     )
-    parser.add_argument(
+    vt_group.add_argument(
         "--allele-frequency-tag",
         action="store",
         required=False,
@@ -171,44 +188,93 @@ def _add_vcf_subparser(subparsers):
         description=description,
         formatter_class=FlexiFormatter,
         epilog="""
-The input CSV file should have four columns:
-1. 'vcf': full paths to bgzipped VCF files containing the called variants for each sample of interest
-2. 'coverage': full paths to files containing the genome coverage for each sample. The coverage files should
-   be in the format output by `bedtools genomecov` (e.g., `bedtools genomecov -ibam input.bam -d > coverage.txt`).
-3. 'sample_name': the name of the sample in the given VCF file
-4. 'sample_number': the sample number. In a longitudinal comparison like long-term passaging, the numbers in the column
-   might go 0, 1, 2, ..., 15.
+The input CSV file must contain the columns:
 
-Note: the order of values in the input CSV file matters, dictating the order of results in the output CSV file.
+sample_name, sample_number, reads1, reads2, bam, vcf, coverage
 
-If 'new mutations' are to be searched against the functional 'pokay' database (default) (see vartracker repository README),
-the path to the parsed pokay csv file must be provided.
+In VCF mode the `reads1`, `reads2`, and `bam` entries may be blank, but `vcf`
+and `coverage` must reference existing files. See the e2e mode if you need to
+generate these columns with Snakemake first.
 """,
     )
 
     _configure_vcf_parser(vcf_parser, include_input_csv=True)
 
-    vcf_parser.set_defaults(handler=_run_vcf_command)
+    vcf_parser.set_defaults(handler=_run_vcf_command, _subparser=vcf_parser)
 
 
 def _add_placeholder_subcommand(
     subparsers, name: str, aliases: tuple[str, ...] = ()
 ) -> None:
-    help_text = f"Placeholder for upcoming '{name}' functionality"
     parser = subparsers.add_parser(
         name,
-        help=help_text,
+        help=f"Placeholder for upcoming '{name}' functionality",
         aliases=list(aliases),
         description=f"The '{name}' workflow is not yet implemented.",
     )
+    parser.set_defaults(handler=_placeholder_handler)
 
-    def _handler(_args):
-        print(
-            f"Subcommand '{name}' is not yet implemented. Please use 'vartracker vcf' for current functionality."
-        )
-        return 1
 
-    parser.set_defaults(handler=_handler)
+def _placeholder_handler(_args):
+    print(
+        "Subcommand not yet implemented. Please use 'vartracker vcf' for current functionality."
+    )
+    return 1
+
+
+def _add_bam_subparser(subparsers):
+    description = (
+        "Process BAM inputs through the Snakemake workflow before running vartracker."
+    )
+    bam_parser = subparsers.add_parser(
+        "bam",
+        help="Run the BAM preprocessing workflow",
+        description=description,
+        formatter_class=FlexiFormatter,
+        epilog="""
+Provide a CSV with columns:
+
+sample_name,sample_number,reads1,reads2,bam,vcf,coverage
+
+In BAM mode the `bam` column must point to existing files while `reads1`,
+`reads2`, `vcf`, and `coverage` may be blank.
+""",
+    )
+
+    _configure_vcf_parser(bam_parser, include_input_csv=True, input_csv_required=True)
+
+    snk_group = bam_parser.add_argument_group("Snakemake options")
+    snk_group.add_argument(
+        "--snakemake-outdir",
+        default=None,
+        help="Output directory for Snakemake artefacts (default: use --outdir)",
+    )
+    snk_group.add_argument(
+        "--cores",
+        type=int,
+        default=8,
+        help="Number of cores for Snakemake execution (default: 8)",
+    )
+    snk_group.add_argument(
+        "--snakemake-dryrun",
+        action="store_true",
+        help="Perform a Snakemake dry-run and skip vartracker analysis",
+        default=False,
+    )
+    snk_group.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print Snakemake shell commands during execution",
+        default=False,
+    )
+    snk_group.add_argument(
+        "--redo",
+        action="store_true",
+        help="Force Snakemake to recompute all targets (forceall)",
+        default=False,
+    )
+
+    bam_parser.set_defaults(handler=_run_bam_command, _subparser=bam_parser)
 
 
 def create_parser():
@@ -224,7 +290,7 @@ def create_parser():
 
     subparsers = parser.add_subparsers(dest="command")
     _add_vcf_subparser(subparsers)
-    _add_placeholder_subcommand(subparsers, "bam")
+    _add_bam_subparser(subparsers)
     _add_e2e_subparser(subparsers)
 
     return parser
@@ -247,8 +313,10 @@ def setup_default_paths(args):
     if args.reference is None:
         args.reference = get_package_data_path("NC_045512.fasta")
 
-    if args.annotation is None:
-        args.annotation = get_package_data_path("NC_045512.gff3")
+    annotation = getattr(args, "gff3", None)
+    if annotation is None:
+        annotation = get_package_data_path("NC_045512.gff3")
+    args.gff3 = annotation
 
     return args
 
@@ -275,7 +343,7 @@ def main(sysargs=None):
 
 
 def _run_vcf_command(args):
-    annotation_supplied = args.annotation is not None
+    annotation_supplied = getattr(args, "gff3", None) is not None
 
     with ExitStack() as stack:
         input_csv_path = args.input_csv
@@ -308,15 +376,13 @@ def _run_vcf_command(args):
             if args.outdir == ".":
                 args.outdir = os.path.join(os.getcwd(), "vartracker_test_results")
         elif input_csv_path is None:
-            print(
-                "ERROR: Missing required argument: input_csv.\n"
-                "Usage: vartracker vcf <input_csv> [options]"
-            )
+            args._subparser.print_help()
             return 1
 
         args.input_csv = input_csv_path
 
-        print(get_logo())
+        if not getattr(args, "_suppress_logo", False):
+            print(get_logo())
 
         try:
             # Validate dependencies
@@ -326,19 +392,19 @@ def _run_vcf_command(args):
             args = setup_default_paths(args)
 
             try:
-                validate_reference_and_annotation(args.reference, args.annotation)
+                validate_reference_and_annotation(args.reference, args.gff3)
             except ValueError as exc:
                 raise InputValidationError(str(exc)) from exc
 
             gene_lengths_override = None
             if annotation_supplied:
                 try:
-                    gene_lengths_override = gene_lengths_from_gff3(args.annotation)
+                    gene_lengths_override = gene_lengths_from_gff3(args.gff3)
                 except (
                     Exception
                 ) as exc:  # pragma: no cover - parsing errors surfaced to user
                     raise InputValidationError(
-                        f"Failed to parse annotation file '{args.annotation}': {exc}"
+                        f"Failed to parse annotation file '{args.gff3}': {exc}"
                     ) from exc
 
             # Read input CSV
@@ -368,7 +434,10 @@ def _run_vcf_command(args):
                     input_file[column] = input_file[column].apply(resolve_path)
 
             # Validate input file
-            validate_input_file(input_file)
+            validate_input_file(
+                input_file,
+                optional_empty={"reads1", "reads2", "bam"},
+            )
 
             # Apply passage cap if specified
             if args.passage_cap is not None:
@@ -470,39 +539,46 @@ def _add_e2e_subparser(subparsers):
     _configure_vcf_parser(e2e_parser, include_input_csv=False)
 
     e2e_parser.add_argument(
-        "--samples",
-        required=True,
+        "samples_csv",
         help="Path to read sample metadata CSV for the Snakemake workflow",
     )
-    e2e_parser.add_argument(
+
+    snk_group = e2e_parser.add_argument_group("Snakemake options")
+    snk_group.add_argument(
         "--snakemake-outdir",
         default=None,
         help="Output directory for Snakemake artefacts (default: use --outdir)",
     )
-    e2e_parser.add_argument(
+    snk_group.add_argument(
         "--cores",
         type=int,
         default=8,
         help="Number of cores for Snakemake execution (default: 8)",
     )
-    e2e_parser.add_argument(
+    snk_group.add_argument(
         "--primer-bed",
         help="Optional primer BED file for amplicon clipping in Snakemake",
     )
-    e2e_parser.add_argument(
+    snk_group.add_argument(
         "--snakemake-dryrun",
         action="store_true",
         help="Perform a Snakemake dry-run and skip vartracker analysis",
         default=False,
     )
-    e2e_parser.add_argument(
+    snk_group.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print Snakemake shell commands during execution",
+        default=False,
+    )
+    snk_group.add_argument(
         "--redo",
         action="store_true",
         help="Force Snakemake to recompute all targets (forceall)",
         default=False,
     )
 
-    e2e_parser.set_defaults(handler=_run_e2e_command)
+    e2e_parser.set_defaults(handler=_run_e2e_command, _subparser=e2e_parser)
 
 
 def _run_e2e_command(args):
@@ -510,15 +586,30 @@ def _run_e2e_command(args):
 
     snakemake_outdir = args.snakemake_outdir or args.outdir
 
+    try:
+        snakemake_input = pd.read_csv(args.samples_csv)
+    except Exception as exc:
+        raise InputValidationError(
+            f"Could not read input file: {args.samples_csv}. {exc}"
+        )
+
+    validate_input_file(
+        snakemake_input,
+        optional_empty={"bam", "vcf", "coverage", "reads2"},
+    )
+
+    print(get_logo())
+
     updated_csv = run_e2e_workflow(
-        samples_csv=args.samples,
+        samples_csv=args.samples_csv,
         reference=args.reference,
         outdir=snakemake_outdir,
         cores=args.cores,
         primer_bed=args.primer_bed,
         dryrun=args.snakemake_dryrun,
         force_all=args.redo,
-        quiet=not args.debug,
+        quiet=not args.verbose,
+        mode="reads",
     )
 
     if args.snakemake_dryrun:
@@ -532,6 +623,61 @@ def _run_e2e_command(args):
     vcf_args = copy.deepcopy(args)
     vcf_args.input_csv = updated_csv
     vcf_args.command = "vcf"
+    setattr(vcf_args, "_suppress_logo", True)
+
+    return _run_vcf_command(vcf_args)
+
+
+def _run_bam_command(args):
+    args = setup_default_paths(args)
+
+    if args.input_csv is None:
+        print(
+            "ERROR: Missing required argument: input_csv.\n"
+            "Usage: vartracker bam <input_csv> [options]"
+        )
+        return 1
+
+    try:
+        bam_input = pd.read_csv(args.input_csv)
+    except Exception as exc:
+        raise InputValidationError(
+            f"Could not read input file: {args.input_csv}. {exc}"
+        )
+
+    validate_input_file(
+        bam_input,
+        optional_empty={"reads1", "reads2", "vcf", "coverage"},
+    )
+
+    snakemake_outdir = args.snakemake_outdir or args.outdir
+
+    print(get_logo())
+
+    updated_csv = run_e2e_workflow(
+        samples_csv=args.input_csv,
+        reference=args.reference,
+        outdir=snakemake_outdir,
+        cores=args.cores,
+        primer_bed=None,
+        dryrun=args.snakemake_dryrun,
+        force_all=args.redo,
+        quiet=not args.verbose,
+        mode="bam",
+    )
+
+    if args.snakemake_dryrun:
+        return 0
+
+    if not updated_csv or not os.path.exists(updated_csv):
+        raise ProcessingError(
+            "BAM workflow did not produce the expected updated sample sheet"
+        )
+
+    vcf_args = copy.deepcopy(args)
+    vcf_args.input_csv = updated_csv
+    vcf_args.command = "vcf"
+    setattr(vcf_args, "_suppress_logo", True)
 
     return _run_vcf_command(vcf_args)
 
@@ -582,7 +728,7 @@ def _process_files(
                 args.min_snv_freq,
                 args.min_indel_freq,
                 args.reference,
-                args.annotation,
+                args.gff3,
                 args.debug,
                 args.allele_frequency_tag,
             )
@@ -609,7 +755,7 @@ def _process_files(
 
         # Process VCF and extract variants
         print("Summarising results...")
-        table = process_vcf(csq_file, covs, sample_names)
+        table = process_vcf(csq_file, covs, args.min_depth, sample_names)
 
     # Add sample name column if provided
     if args.name is not None:

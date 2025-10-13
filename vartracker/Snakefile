@@ -9,6 +9,35 @@ SAMPLES = samples_df.set_index("sample_name", drop=False).to_dict(orient="index"
 REF = config["reference"]
 OUTDIR = config.get("outdir", "results")
 PRIMER_BED = config.get("primer_bed", None)
+MODE = config.get("mode", "reads")
+
+
+def _value_or_blank(sample, key, allow_blank=False):
+    value = SAMPLES[sample].get(key)
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "" if allow_blank else None
+    text = str(value).strip()
+    if not text:
+        return "" if allow_blank else None
+    return text
+
+
+def _require_value(sample, key):
+    value = _value_or_blank(sample, key)
+    if not value:
+        raise ValueError(f"Missing value for column '{key}' in sample '{sample}'")
+    return value
+
+
+def _initial_bam(wildcards):
+    if MODE == "reads":
+        return f"{OUTDIR}/{wildcards.sample}/aligned.clipped.bam"
+    bam_path = _value_or_blank(wildcards.sample, "bam")
+    if not bam_path:
+        raise ValueError(
+            f"Sample '{wildcards.sample}' is missing a BAM path in the input CSV"
+        )
+    return bam_path
 
 rule all:
     input:
@@ -17,129 +46,133 @@ rule all:
         expand(f"{OUTDIR}/{{sample}}/{{sample}}_depth.txt", sample=SAMPLES.keys()),
         f"{OUTDIR}/vartracker_execution_spreadsheet.csv"
 
-rule bwa_index:
-    input:
-        ref = REF
-    output:
-        amb = REF + ".amb",
-        ann = REF + ".ann",
-        bwt = REF + ".bwt",
-        pac = REF + ".pac",
-        sa = REF + ".sa"
-    shell:
-        """
-        bwa index {input.ref} 2> /dev/null
-        """
+if MODE == "reads":
+    rule bwa_index:
+        input:
+            ref = REF
+        output:
+            amb = REF + ".amb",
+            ann = REF + ".ann",
+            bwt = REF + ".bwt",
+            pac = REF + ".pac",
+            sa = REF + ".sa"
+        shell:
+            """
+            bwa index {input.ref} 2> /dev/null
+            """
 
-rule fastp:
-    input:
-        r1 = lambda w: SAMPLES[w.sample]["reads1"],
-        r2 = lambda w: SAMPLES[w.sample].get("reads2", "")
-    output:
-        r1 = temp(f"{OUTDIR}/{{sample}}/trimmed_R1.fastq.gz"),
-        r2 = temp(f"{OUTDIR}/{{sample}}/trimmed_R2.fastq.gz"),
-        html = temp(f"{OUTDIR}/{{sample}}/fastp.html"),
-        json = temp(f"{OUTDIR}/{{sample}}/fastp.json")
-    threads: max(1, int(workflow.cores * 0.5))
-    shell:
-        """
-        if [ -n "{input.r2}" ]; then
-            fastp -i {input.r1} -I {input.r2} \
-                -o {output.r1} -O {output.r2} \
-                -w {threads} \
-                --detect_adapter_for_pe \
-                --cut_front \
-                --cut_tail \
-                --cut_mean_quality 20 \
-                --correction \
-                --length_required 50 \
-                -h {output.html} \
-                -j {output.json} 2> /dev/null
-        else
-            fastp -i {input.r1} \
-                -o {output.r1} \
-                -w {threads} \
-                --cut_front \
-                --cut_tail \
-                --cut_mean_quality 20 \
-                --length_required 50 \
-                -h {output.html} \
-                -j {output.json} 2> /dev/null
-            touch {output.r2}
-        fi
-        """
+    rule fastp:
+        input:
+            r1 = lambda w: _require_value(w.sample, "reads1"),
+            r2 = lambda w: _value_or_blank(w.sample, "reads2", allow_blank=True)
+        output:
+            r1 = temp(f"{OUTDIR}/{{sample}}/trimmed_R1.fastq.gz"),
+            r2 = temp(f"{OUTDIR}/{{sample}}/trimmed_R2.fastq.gz"),
+            html = temp(f"{OUTDIR}/{{sample}}/fastp.html"),
+            json = temp(f"{OUTDIR}/{{sample}}/fastp.json")
+        threads: max(1, int(workflow.cores * 0.5))
+        shell:
+            """
+            mkdir -p {OUTDIR}/{wildcards.sample}
+            if [ -n "{input.r2}" ]; then
+                fastp -i {input.r1} -I {input.r2} \
+                    -o {output.r1} -O {output.r2} \
+                    -w {threads} \
+                    --detect_adapter_for_pe \
+                    --cut_front \
+                    --cut_tail \
+                    --cut_mean_quality 20 \
+                    --correction \
+                    --length_required 50 \
+                    -h {output.html} \
+                    -j {output.json} 2> /dev/null
+            else
+                fastp -i {input.r1} \
+                    -o {output.r1} \
+                    -w {threads} \
+                    --cut_front \
+                    --cut_tail \
+                    --cut_mean_quality 20 \
+                    --length_required 50 \
+                    -h {output.html} \
+                    -j {output.json} 2> /dev/null
+                touch {output.r2}
+            fi
+            """
 
-rule bwa_mem:
-    input:
-        r1 = f"{OUTDIR}/{{sample}}/trimmed_R1.fastq.gz",
-        r2 = f"{OUTDIR}/{{sample}}/trimmed_R2.fastq.gz",
-        ref = REF,
-        idx = REF + ".amb"
-    output:
-        bam = temp(f"{OUTDIR}/{{sample}}/aligned.raw.bam"),
-        bai = temp(f"{OUTDIR}/{{sample}}/aligned.raw.bam.bai")
-    params:
-        rg = lambda w: f"@RG\\tID:{w.sample}\\tSM:{w.sample}\\tPL:ILLUMINA"
-    threads: max(1, workflow.cores)
-    shell:
-        """
-        if [ -s {input.r2} ]; then
-            bwa mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} {input.r2} 2> /dev/null | \
-                samtools view -b - | \
-                samtools sort -@ {threads} -o {output.bam} 2> /dev/null
-        else
-            bwa mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} 2> /dev/null | \
-                samtools view -b - | \
-                samtools sort -@ {threads} -o {output.bam} 2> /dev/null
-        fi
-        samtools index {output.bam}
-        """
+    rule bwa_mem:
+        input:
+            r1 = f"{OUTDIR}/{{sample}}/trimmed_R1.fastq.gz",
+            r2 = f"{OUTDIR}/{{sample}}/trimmed_R2.fastq.gz",
+            ref = REF,
+            idx = REF + ".amb"
+        output:
+            bam = temp(f"{OUTDIR}/{{sample}}/aligned.raw.bam"),
+            bai = temp(f"{OUTDIR}/{{sample}}/aligned.raw.bam.bai")
+        params:
+            rg = lambda w: f"@RG\\tID:{w.sample}\\tSM:{w.sample}\\tPL:ILLUMINA"
+        threads: max(1, workflow.cores)
+        shell:
+            """
+            mkdir -p {OUTDIR}/{wildcards.sample}
+            if [ -s {input.r2} ]; then
+                bwa mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} {input.r2} 2> /dev/null | \
+                    samtools view -b - | \
+                    samtools sort -@ {threads} -o {output.bam} 2> /dev/null
+            else
+                bwa mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} 2> /dev/null | \
+                    samtools view -b - | \
+                    samtools sort -@ {threads} -o {output.bam} 2> /dev/null
+            fi
+            samtools index {output.bam}
+            """
 
-rule ampliconclip:
-    input:
-        bam = f"{OUTDIR}/{{sample}}/aligned.raw.bam"
-    output:
-        bam = temp(f"{OUTDIR}/{{sample}}/aligned.clipped.bam"),
-        bai = temp(f"{OUTDIR}/{{sample}}/aligned.clipped.bam.bai"),
-        log = temp(f"{OUTDIR}/{{sample}}/ampliconclip.log")
-    params:
-        bed = PRIMER_BED if PRIMER_BED else ""
-    threads: max(1, int(workflow.cores * 0.5))
-    run:
-        if PRIMER_BED:
-            shell("""
-                samtools ampliconclip -b {params.bed} -@ {threads} \
-                --strand --both-ends -o - {input.bam} 2> {output.log} \
-                | samtools sort -@ {threads} -o {output.bam} - 2> /dev/null
-                samtools index {output.bam}
-            """)
-        else:
-            shell("""
-                cp {input.bam} {output.bam}
-                cp {input.bam}.bai {output.bam}.bai
-                touch {output.log}
-            """)
-
-rule samtools_depth:
-    input:
-        bam = f"{OUTDIR}/{{sample}}/aligned.clipped.bam"
-    output:
-        depth = f"{OUTDIR}/{{sample}}/{{sample}}_depth.txt"
-    shell:
-        """
-        samtools depth -aa {input.bam} > {output.depth} 2> /dev/null
-        """
+    rule ampliconclip:
+        input:
+            bam = f"{OUTDIR}/{{sample}}/aligned.raw.bam"
+        output:
+            bam = temp(f"{OUTDIR}/{{sample}}/aligned.clipped.bam"),
+            bai = temp(f"{OUTDIR}/{{sample}}/aligned.clipped.bam.bai"),
+            log = temp(f"{OUTDIR}/{{sample}}/ampliconclip.log")
+        params:
+            bed = PRIMER_BED if PRIMER_BED else ""
+        threads: max(1, int(workflow.cores * 0.5))
+        run:
+            if PRIMER_BED:
+                shell("""
+                    samtools ampliconclip -b {params.bed} -@ {threads} \
+                    --strand --both-ends -o - {input.bam} 2> {output.log} \
+                    | samtools sort -@ {threads} -o {output.bam} - 2> /dev/null
+                    samtools index {output.bam}
+                """)
+            else:
+                shell("""
+                    cp {input.bam} {output.bam}
+                    cp {input.bam}.bai {output.bam}.bai
+                    touch {output.log}
+                """)
 
 rule lofreq_indelqual:
     input:
-        bam = f"{OUTDIR}/{{sample}}/aligned.clipped.bam",
+        bam = _initial_bam,
         ref = REF
     output:
         bam = f"{OUTDIR}/{{sample}}/{{sample}}_aligned.indelqual.bam"
     shell:
         """
+        mkdir -p {OUTDIR}/{wildcards.sample}
         lofreq indelqual --dindel -f {input.ref} -o {output.bam} {input.bam} 2> /dev/null
         samtools index {output.bam}
+        """
+
+rule samtools_depth:
+    input:
+        bam = f"{OUTDIR}/{{sample}}/{{sample}}_aligned.indelqual.bam"
+    output:
+        depth = f"{OUTDIR}/{{sample}}/{{sample}}_depth.txt"
+    shell:
+        """
+        samtools depth -aa {input.bam} > {output.depth} 2> /dev/null
         """
 
 rule lofreq_call:

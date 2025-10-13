@@ -139,7 +139,11 @@ def generate_cumulative_lineplot(table, pname, sample_number_list, outname):
             kind="line",
             height=3.5,
             aspect=1.5,
-        ).set(ylabel="Number of Mutations", xlabel="Passage", ylim=(0, None))
+        ).set(ylabel="Number of Mutations", xlabel="Sample", ylim=(0, None))
+
+        ax = f.ax
+        ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+        ax.yaxis.set_major_locator(plt.MaxNLocator(integer=True))
 
         f.fig.subplots_adjust(top=0.9)
         f.fig.suptitle(t=title, weight="bold")
@@ -604,16 +608,9 @@ def generate_variant_heatmap(
         )
         ax.set_title(heatmap_title, weight="bold")
 
-        sample_numbers_list = list(sample_numbers) if sample_numbers is not None else []
-        if sample_numbers_list and len(sample_numbers_list) == len(
-            heatmap_data.columns
-        ):
-            tick_labels = [str(number) for number in sample_numbers_list]
-        else:
-            tick_labels = list(heatmap_data.columns)
-
-        ax.set_xticklabels(tick_labels, rotation=0, ha="center")
-        ax.set_xlabel("Passage", fontweight="bold")
+        tick_labels = list(sample_names)
+        ax.set_xticklabels(tick_labels, rotation=45, ha="right")
+        ax.set_xlabel("Sample", fontweight="bold")
         ax.set_ylabel("Variant (5' → 3')", fontweight="bold")
 
         fig.tight_layout()

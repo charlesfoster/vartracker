@@ -135,13 +135,18 @@ Note: this is the format produced by `bedtools genomecov` via the command `bedto
 
 3. **sample_name**: Name of the sample in the VCF file
 4. **sample_number**: Sample number (e.g., 0, 1, 2, ..., 15 for passages)
+5. **reads1** (optional in VCF mode): Path to read 1 FASTQ (leave blank if not available)
+6. **reads2** (optional): Path to read 2 FASTQ (leave blank for single-end data)
+7. **bam** (optional in VCF/e2e modes): Pre-processed BAM path if already generated
+8. **vcf**: Path to the sample VCF file
+9. **coverage**: Path to the per-base coverage file
 
 **Example input CSV:**
 ```csv
-vcf,coverage,sample_name,sample_number
-/path/to/sample0.vcf.gz,/path/to/sample0.coverage,passage_0,0
-/path/to/sample1.vcf.gz,/path/to/sample1.coverage,passage_1,1
-/path/to/sample2.vcf.gz,/path/to/sample2.coverage,passage_2,2
+sample_name,sample_number,reads1,reads2,bam,vcf,coverage
+Passage_0,0,,,,/path/to/sample0.vcf.gz,/path/to/sample0.coverage
+Passage_1,1,,,,/path/to/sample1.vcf.gz,/path/to/sample1.coverage
+Passage_2,2,,,,/path/to/sample2.vcf.gz,/path/to/sample2.coverage
 ```
 
 ### Using with pokay Database
@@ -177,8 +182,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  -a, --annotation ANNOTATION
-                        Annotations to use in GFF3 format (default: uses packaged SARS-CoV-2 annotations)
+  -g, --gff3 GFF3       GFF3 annotations to use (default: packaged SARS-CoV-2 annotations)
   -m, --min-snv-freq MIN_SNV_FREQ
                         Minimum allele frequency of SNV variants to keep (default: 0.03)
   -M, --min-indel-freq MIN_INDEL_FREQ

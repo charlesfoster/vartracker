@@ -6,7 +6,10 @@ Contains utility functions and data processing routines.
 
 import os
 
+import pandas as pd
+
 from .data import get_data_file
+from typing import Iterable, Sequence
 
 
 def get_package_data_path(filename):
@@ -35,7 +38,25 @@ def get_logo():
 """
 
 
-def validate_input_file(input_file):
+DEFAULT_INPUT_COLUMNS: Sequence[str] = (
+    "sample_name",
+    "sample_number",
+    "reads1",
+    "reads2",
+    "bam",
+    "vcf",
+    "coverage",
+)
+
+FILE_COLUMNS = {"reads1", "reads2", "bam", "vcf", "coverage"}
+
+
+def validate_input_file(
+    input_file,
+    *,
+    required_columns: Iterable[str] | None = None,
+    optional_empty: Iterable[str] | None = None,
+):
     """
     Validate the input CSV file format.
 
@@ -45,23 +66,40 @@ def validate_input_file(input_file):
     Raises:
         ValueError: If required columns are missing
     """
-    required_columns = ["vcf", "coverage", "sample_name", "sample_number"]
-    missing_columns = [col for col in required_columns if col not in input_file.columns]
+    required = list(required_columns or DEFAULT_INPUT_COLUMNS)
+    optional_empty = set(optional_empty or set())
+
+    missing_columns = [col for col in required if col not in input_file.columns]
 
     if missing_columns:
         raise ValueError(f"Missing required columns: {missing_columns}")
 
     # Check for empty values
-    for col in required_columns:
-        if input_file[col].isna().any():
+    for col in required:
+        if col in optional_empty:
+            continue
+        series = input_file[col]
+        empty_mask = series.isna() | series.astype(str).str.strip().eq("")
+        if empty_mask.any():
             raise ValueError(f"Column '{col}' contains empty values")
 
     # Check file existence for vcf and coverage files
     for _, row in input_file.iterrows():
-        if not os.path.exists(row["vcf"]):
-            raise FileNotFoundError(f"VCF file not found: {row['vcf']}")
-        if not os.path.exists(row["coverage"]):
-            raise FileNotFoundError(f"Coverage file not found: {row['coverage']}")
+        for col in FILE_COLUMNS:
+            if col not in input_file.columns:
+                continue
+            value = row[col]
+            if pd.isna(value):
+                if col in optional_empty:
+                    continue
+                raise ValueError(f"Column '{col}' contains empty values")
+            path = str(value).strip()
+            if not path:
+                if col in optional_empty:
+                    continue
+                raise ValueError(f"Column '{col}' contains empty values")
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"File not found for column '{col}': {path}")
 
 
 def check_dependencies():

@@ -386,7 +386,7 @@ def merge_consequences(tempdir, csq_file, sample_names, debug):
         raise RuntimeError(f"Error merging VCF files: {str(e)}")
 
 
-def calculate_variant_site_depths(cov_df, v, samples):
+def calculate_variant_site_depths(cov_df, v, samples, min_depth: int):
     """
     Calculate depth metrics for variant sites.
 
@@ -455,13 +455,13 @@ def calculate_variant_site_depths(cov_df, v, samples):
     for x, y, z in zip(variant_depths, site_depths, window_depth):
         if x >= 0:
             variant_qc.append("P")
-        elif x < 0 and y >= 10:
+        elif x < 0 and y >= min_depth:
             variant_qc.append("P")
-        elif v.is_indel and x < 0 and y < 10 and z >= 10:
+        elif v.is_indel and x < 0 and y < min_depth and z >= min_depth:
             variant_qc.append("P")
-        elif v.var_type == "snp" and x < 0 and y < 10:
+        elif v.var_type == "snp" and x < 0 and y < min_depth:
             variant_qc.append("F")
-        elif x < 0 and y < 10 and z < 10:
+        elif x < 0 and y < min_depth and z < min_depth:
             variant_qc.append("F")
 
     variant_depths = ["M" if x == -1 else x for x in variant_depths]
@@ -476,7 +476,7 @@ def calculate_variant_site_depths(cov_df, v, samples):
     return result
 
 
-def process_vcf(vcf_file, covs, sample_names_override=None):
+def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
     """
     Process VCF file and extract variant information.
 
@@ -572,7 +572,7 @@ def process_vcf(vcf_file, covs, sample_names_override=None):
         else:
             persistent_status = "unknown"
 
-        depths_qc = calculate_variant_site_depths(cov_df, v, samples)
+        depths_qc = calculate_variant_site_depths(cov_df, v, samples, min_depth)
         overall_variant_qc = "FAIL" if "F" in depths_qc["variant_qc"] else "PASS"
         first_appearance = (
             samples[presence_absence.index("Y")] if "Y" in presence_absence else "None"
