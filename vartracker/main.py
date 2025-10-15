@@ -6,6 +6,8 @@ Contains the main function and argument parsing for the vartracker command-line 
 
 import argparse
 import copy
+import csv
+import io
 import os
 import shutil
 import sys
@@ -18,6 +20,7 @@ import pandas as pd
 from argparse_formatter import FlexiFormatter
 
 from .analysis_launcher import run_workflow as run_e2e_workflow
+from .generate import generate_csv
 from .core import (
     get_logo,
     get_package_data_path,
@@ -26,6 +29,7 @@ from .core import (
     DependencyError,
     InputValidationError,
     ProcessingError,
+    FILE_COLUMNS,
 )
 from .vcf_processing import format_vcf, merge_consequences, process_vcf
 from .analysis import (
@@ -42,6 +46,110 @@ from .annotation_processing import (
     gene_lengths_from_gff3,
     validate_reference_and_annotation,
 )
+
+_RED = "\033[91m"
+_YELLOW = "\033[93m"
+_RESET = "\033[0m"
+
+
+def _print_dependency_error(error: DependencyError) -> None:
+    """Render a dependency error with optional remediation tips."""
+    message = str(error)
+    print(f"\n{_RED}{message}{_RESET}")
+    tip = getattr(error, "tip", None)
+    if tip:
+        print(f"{_YELLOW}[Tip]:{_RESET} {tip}")
+    print()
+
+
+def _copy_test_dataset(target_dir: Path) -> None:
+    """Copy the bundled test dataset into the target directory."""
+    data_root = resources.files("vartracker").joinpath("test_data")
+    if hasattr(data_root, "exists") and data_root.exists():
+        with resources.as_file(data_root) as data_path:
+            shutil.copytree(data_path, target_dir, dirs_exist_ok=True)
+    else:
+        fallback = Path(__file__).resolve().parent / "test_data"
+        if not fallback.exists():
+            raise InputValidationError("Bundled test data not found")
+        shutil.copytree(fallback, target_dir, dirs_exist_ok=True)
+
+
+def _make_csv_paths_absolute(csv_path: Path) -> None:
+    """Rewrite CSV file paths to be absolute relative to the CSV location."""
+    df = pd.read_csv(csv_path)
+    base_dir = csv_path.parent.resolve()
+
+    def _resolve(value: str, column: str) -> str:
+        if pd.isna(value):
+            return value
+        text = str(value).strip()
+        if not text:
+            return ""
+        path = Path(text)
+        if not path.is_absolute():
+            path = (base_dir / path).resolve()
+        else:
+            path = path.resolve()
+
+        if column == "coverage" and not path.exists():
+            candidates = []
+            name = path.name
+            if ".depth." in name:
+                candidates.append(path.with_name(name.replace(".depth", "_depth", 1)))
+            if "_depth." in name:
+                candidates.append(path.with_name(name.replace("_depth", ".depth", 1)))
+            if name.endswith(".coverage.txt"):
+                candidates.append(
+                    path.with_name(name.replace(".coverage", "_coverage"))
+                )
+            for candidate in candidates:
+                if candidate.exists():
+                    path = candidate
+                    break
+        return str(path)
+
+    for column in FILE_COLUMNS:
+        if column in df.columns:
+            df[column] = df[column].apply(
+                lambda value, col=column: _resolve(value, col)
+            )
+
+    df.to_csv(csv_path, index=False)
+
+
+def _prepare_test_run(args, mode: str):
+    """Prepare the temporary dataset used by --test for each mode."""
+    temp_dir = tempfile.TemporaryDirectory(prefix="vartracker_demo_data_")
+    base = Path(temp_dir.name)
+    _copy_test_dataset(base)
+
+    csv_map = {
+        "vcf": "test_input_vcf.csv",
+        "bam": "test_input_bam.csv",
+        "e2e": "test_input_e2e.csv",
+    }
+    csv_name = csv_map.get(mode, "test_input_vcf.csv")
+    csv_path = base / "inputs" / csv_name
+    if not csv_path.exists():
+        raise InputValidationError(
+            f"Test input spreadsheet for '{mode}' mode not found at {csv_path}"
+        )
+    _make_csv_paths_absolute(csv_path)
+
+    pokay_path = base / "mock_pokay" / "mock_pokay.csv"
+    if not pokay_path.exists():
+        raise InputValidationError("Bundled mock pokay database not found")
+
+    args.search_pokay = True
+    args.download_pokay = False
+    args.pokay_csv = str(pokay_path)
+    if args.name is None:
+        args.name = f"vartracker_{mode}_demo"
+
+    args._test_data_dir = str(base)
+
+    return temp_dir, csv_path
 
 
 def _configure_vcf_parser(
@@ -241,7 +349,7 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
 """,
     )
 
-    _configure_vcf_parser(bam_parser, include_input_csv=True, input_csv_required=True)
+    _configure_vcf_parser(bam_parser, include_input_csv=True, input_csv_required=False)
 
     snk_group = bam_parser.add_argument_group("Snakemake options")
     snk_group.add_argument(
@@ -277,6 +385,40 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
     bam_parser.set_defaults(handler=_run_bam_command, _subparser=bam_parser)
 
 
+def _add_generate_subparser(subparsers):
+    description = "Generate template CSV files for vartracker input."
+    gen_parser = subparsers.add_parser(
+        "generate",
+        help="Generate input spreadsheets from an existing directory of files",
+        description=description,
+        formatter_class=FlexiFormatter,
+    )
+
+    gen_parser.add_argument(
+        "--mode",
+        choices=["vcf", "bam", "e2e"],
+        required=True,
+        help="What type of pipeline the generated CSV should target",
+    )
+    gen_parser.add_argument(
+        "--dir",
+        required=True,
+        help="Directory to scan for input files",
+    )
+    gen_parser.add_argument(
+        "--out",
+        default="generated_input.csv",
+        help="Where to write the generated CSV (default: generated_input.csv)",
+    )
+    gen_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Only report what would be generated without writing the CSV",
+    )
+
+    gen_parser.set_defaults(handler=_run_generate_command)
+
+
 def create_parser():
     """Create and return the top-level argument parser with subcommands."""
 
@@ -292,20 +434,23 @@ def create_parser():
     _add_vcf_subparser(subparsers)
     _add_bam_subparser(subparsers)
     _add_e2e_subparser(subparsers)
+    _add_generate_subparser(subparsers)
 
     return parser
 
 
-def validate_dependencies():
-    """Check and validate required dependencies."""
-    deps = check_dependencies()
+def validate_dependencies(mode: str = "vcf"):
+    deps = check_dependencies(mode)
     missing = [tool for tool, available in deps.items() if not available]
-
     if missing:
-        raise DependencyError(
-            f"Missing required tools: {', '.join(missing)}. "
-            "Please install bcftools and tabix."
+        missing_list = ", ".join(missing)
+        install_hint = f"conda install -c bioconda {' '.join(missing)}"
+        message = (
+            f"Dependency error: to run the {mode} mode the following tools must be available: "
+            f"{missing_list}"
         )
+        tip = f"try installing missing dependencies with (e.g.) `{install_hint}`"
+        raise DependencyError(message, mode=mode, missing=missing, tip=tip)
 
 
 def setup_default_paths(args):
@@ -349,30 +494,9 @@ def _run_vcf_command(args):
         input_csv_path = args.input_csv
 
         if args.test:
-            data_root = resources.files("vartracker").joinpath("test_data")
-            temp_dir_obj = tempfile.TemporaryDirectory(prefix="vartracker_demo_data_")
-            stack.enter_context(temp_dir_obj)
-
-            target_dir = Path(temp_dir_obj.name)
-
-            if hasattr(data_root, "exists") and data_root.exists():
-                with resources.as_file(data_root) as data_path:
-                    data_path = Path(data_path)
-                    shutil.copytree(data_path, target_dir, dirs_exist_ok=True)
-            else:
-                fallback = Path(__file__).resolve().parent / "test_data"
-                if not fallback.exists():
-                    raise InputValidationError("Bundled test data not found")
-                shutil.copytree(fallback, target_dir, dirs_exist_ok=True)
-
-            base = target_dir
-            args._test_data_dir = str(base)
-            input_csv_path = str((base / "inputs" / "test_input.csv").resolve())
-            if not args.download_pokay:
-                args.pokay_csv = str((base / "mock_pokay" / "mock_pokay.csv").resolve())
-            args.search_pokay = True
-            if args.name is None:
-                args.name = "vartracker_demo"
+            temp_dir, csv_path = _prepare_test_run(args, "vcf")
+            stack.enter_context(temp_dir)
+            input_csv_path = str(csv_path.resolve())
             if args.outdir == ".":
                 args.outdir = os.path.join(os.getcwd(), "vartracker_test_results")
         elif input_csv_path is None:
@@ -514,7 +638,10 @@ def _run_vcf_command(args):
 
             print(f"\nFinished: find results in {args.outdir}\n")
             return 0
-        except (DependencyError, InputValidationError, ProcessingError) as e:
+        except DependencyError as e:
+            _print_dependency_error(e)
+            return 1
+        except (InputValidationError, ProcessingError) as e:
             print(f"\nERROR: {str(e)}\n")
             return 1
         except Exception as e:
@@ -540,6 +667,7 @@ def _add_e2e_subparser(subparsers):
 
     e2e_parser.add_argument(
         "samples_csv",
+        nargs="?",
         help="Path to read sample metadata CSV for the Snakemake workflow",
     )
 
@@ -582,104 +710,197 @@ def _add_e2e_subparser(subparsers):
 
 
 def _run_e2e_command(args):
-    args = setup_default_paths(args)
-
-    snakemake_outdir = args.snakemake_outdir or args.outdir
-
+    test_context = None
     try:
-        snakemake_input = pd.read_csv(args.samples_csv)
-    except Exception as exc:
-        raise InputValidationError(
-            f"Could not read input file: {args.samples_csv}. {exc}"
+        try:
+            validate_dependencies("e2e")
+        except DependencyError as error:
+            _print_dependency_error(error)
+            return 1
+
+        args = setup_default_paths(args)
+
+        if getattr(args, "test", False):
+            test_context, csv_path = _prepare_test_run(args, "e2e")
+            args.samples_csv = str(csv_path.resolve())
+            if args.outdir == ".":
+                args.outdir = os.path.join(os.getcwd(), "vartracker_e2e_test_results")
+            if args.snakemake_outdir is None:
+                args.snakemake_outdir = args.outdir
+        elif args.samples_csv is None:
+            print(
+                "ERROR: Missing required argument: samples_csv.\n"
+                "Usage: vartracker end-to-end <samples_csv> [options]"
+            )
+            return 1
+
+        snakemake_outdir = args.snakemake_outdir or args.outdir
+
+        try:
+            snakemake_input = pd.read_csv(args.samples_csv)
+        except Exception as exc:
+            raise InputValidationError(
+                f"Could not read input file: {args.samples_csv}. {exc}"
+            )
+
+        validate_input_file(
+            snakemake_input,
+            optional_empty={"bam", "vcf", "coverage", "reads2"},
         )
 
-    validate_input_file(
-        snakemake_input,
-        optional_empty={"bam", "vcf", "coverage", "reads2"},
-    )
+        print(get_logo())
 
-    print(get_logo())
-
-    updated_csv = run_e2e_workflow(
-        samples_csv=args.samples_csv,
-        reference=args.reference,
-        outdir=snakemake_outdir,
-        cores=args.cores,
-        primer_bed=args.primer_bed,
-        dryrun=args.snakemake_dryrun,
-        force_all=args.redo,
-        quiet=not args.verbose,
-        mode="reads",
-    )
-
-    if args.snakemake_dryrun:
-        return 0
-
-    if not updated_csv or not os.path.exists(updated_csv):
-        raise ProcessingError(
-            "End-to-end workflow did not produce the expected updated sample sheet"
+        updated_csv = run_e2e_workflow(
+            samples_csv=args.samples_csv,
+            reference=args.reference,
+            outdir=snakemake_outdir,
+            cores=args.cores,
+            primer_bed=args.primer_bed,
+            dryrun=args.snakemake_dryrun,
+            force_all=args.redo,
+            quiet=not args.verbose,
+            mode="reads",
         )
 
-    vcf_args = copy.deepcopy(args)
-    vcf_args.input_csv = updated_csv
-    vcf_args.command = "vcf"
-    setattr(vcf_args, "_suppress_logo", True)
+        if args.snakemake_dryrun:
+            return 0
 
-    return _run_vcf_command(vcf_args)
+        if not updated_csv or not os.path.exists(updated_csv):
+            raise ProcessingError(
+                "End-to-end workflow did not produce the expected updated sample sheet"
+            )
+
+        vcf_args = copy.deepcopy(args)
+        vcf_args.input_csv = updated_csv
+        vcf_args.command = "vcf"
+        setattr(vcf_args, "_suppress_logo", True)
+        vcf_args.test = False
+
+        return _run_vcf_command(vcf_args)
+    finally:
+        if test_context is not None:
+            test_context.cleanup()
 
 
 def _run_bam_command(args):
-    args = setup_default_paths(args)
+    test_context = None
+    try:
+        try:
+            validate_dependencies("bam")
+        except DependencyError as error:
+            _print_dependency_error(error)
+            return 1
 
-    if args.input_csv is None:
-        print(
-            "ERROR: Missing required argument: input_csv.\n"
-            "Usage: vartracker bam <input_csv> [options]"
+        args = setup_default_paths(args)
+
+        if getattr(args, "test", False):
+            test_context, csv_path = _prepare_test_run(args, "bam")
+            args.input_csv = str(csv_path.resolve())
+            if args.outdir == ".":
+                args.outdir = os.path.join(os.getcwd(), "vartracker_bam_test_results")
+            if args.snakemake_outdir is None:
+                args.snakemake_outdir = args.outdir
+        elif args.input_csv is None:
+            print(
+                "ERROR: Missing required argument: input_csv.\n"
+                "Usage: vartracker bam <input_csv> [options]"
+            )
+            return 1
+
+        try:
+            bam_input = pd.read_csv(args.input_csv)
+        except Exception as exc:
+            raise InputValidationError(
+                f"Could not read input file: {args.input_csv}. {exc}"
+            )
+
+        validate_input_file(
+            bam_input,
+            optional_empty={"reads1", "reads2", "vcf", "coverage"},
         )
-        return 1
+
+        snakemake_outdir = args.snakemake_outdir or args.outdir
+
+        print(get_logo())
+
+        updated_csv = run_e2e_workflow(
+            samples_csv=args.input_csv,
+            reference=args.reference,
+            outdir=snakemake_outdir,
+            cores=args.cores,
+            primer_bed=None,
+            dryrun=args.snakemake_dryrun,
+            force_all=args.redo,
+            quiet=not args.verbose,
+            mode="bam",
+        )
+
+        if args.snakemake_dryrun:
+            return 0
+
+        if not updated_csv or not os.path.exists(updated_csv):
+            raise ProcessingError(
+                "BAM workflow did not produce the expected updated sample sheet"
+            )
+
+        vcf_args = copy.deepcopy(args)
+        vcf_args.input_csv = updated_csv
+        vcf_args.command = "vcf"
+        setattr(vcf_args, "_suppress_logo", True)
+        vcf_args.test = False
+
+        return _run_vcf_command(vcf_args)
+    finally:
+        if test_context is not None:
+            test_context.cleanup()
+
+
+def _run_generate_command(args):
+    directory = Path(args.dir).expanduser()
+    output_path = Path(args.out).expanduser().resolve()
 
     try:
-        bam_input = pd.read_csv(args.input_csv)
+        records, warnings = generate_csv(
+            args.mode,
+            directory,
+            output_path,
+            dry_run=args.dry_run,
+        )
     except Exception as exc:
-        raise InputValidationError(
-            f"Could not read input file: {args.input_csv}. {exc}"
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+    if args.dry_run:
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(
+            [
+                "sample_name",
+                "sample_number",
+                "reads1",
+                "reads2",
+                "bam",
+                "vcf",
+                "coverage",
+            ]
         )
+        for record in records:
+            writer.writerow(record.as_row())
 
-    validate_input_file(
-        bam_input,
-        optional_empty={"reads1", "reads2", "vcf", "coverage"},
-    )
+        table = buffer.getvalue().strip()
+        if table:
+            print(table)
+        note = "(dry run)"
+    else:
+        note = f"written to {output_path}"
 
-    snakemake_outdir = args.snakemake_outdir or args.outdir
+    print(f"Generated input spreadsheet {note}")
+    if warnings:
+        print("\nWarnings:")
+        for entry in warnings:
+            print(f" - {entry}")
 
-    print(get_logo())
-
-    updated_csv = run_e2e_workflow(
-        samples_csv=args.input_csv,
-        reference=args.reference,
-        outdir=snakemake_outdir,
-        cores=args.cores,
-        primer_bed=None,
-        dryrun=args.snakemake_dryrun,
-        force_all=args.redo,
-        quiet=not args.verbose,
-        mode="bam",
-    )
-
-    if args.snakemake_dryrun:
-        return 0
-
-    if not updated_csv or not os.path.exists(updated_csv):
-        raise ProcessingError(
-            "BAM workflow did not produce the expected updated sample sheet"
-        )
-
-    vcf_args = copy.deepcopy(args)
-    vcf_args.input_csv = updated_csv
-    vcf_args.command = "vcf"
-    setattr(vcf_args, "_suppress_logo", True)
-
-    return _run_vcf_command(vcf_args)
+    return 0
 
 
 def _process_files(

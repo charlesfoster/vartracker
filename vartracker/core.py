@@ -102,21 +102,22 @@ def validate_input_file(
                 raise FileNotFoundError(f"File not found for column '{col}': {path}")
 
 
-def check_dependencies():
-    """
-    Check if required external tools are available.
+def check_dependencies(mode: str = "vcf"):
+    """Check required external tools based on mode."""
 
-    Returns:
-        dict: Dictionary of tool availability
-    """
     import shutil
 
-    tools = {
-        "bcftools": shutil.which("bcftools") is not None,
-        "tabix": shutil.which("tabix") is not None,
-    }
+    mode = mode.lower()
+    if mode == "vcf":
+        requirements = ["bcftools", "tabix"]
+    elif mode == "bam":
+        requirements = ["samtools", "bcftools", "lofreq", "tabix"]
+    elif mode == "e2e":
+        requirements = ["samtools", "bcftools", "tabix", "lofreq", "fastp", "bwa"]
+    else:
+        requirements = ["bcftools", "tabix"]
 
-    return tools
+    return {tool: shutil.which(tool) is not None for tool in requirements}
 
 
 class VartrackerError(Exception):
@@ -128,7 +129,18 @@ class VartrackerError(Exception):
 class DependencyError(VartrackerError):
     """Raised when required dependencies are missing."""
 
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        mode: str | None = None,
+        missing: Iterable[str] | None = None,
+        tip: str | None = None,
+    ):
+        super().__init__(message)
+        self.mode = mode
+        self.missing = list(missing or [])
+        self.tip = tip
 
 
 class InputValidationError(VartrackerError):

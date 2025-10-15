@@ -73,9 +73,8 @@ def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
 
     # Accumulators
     gene_cds_bp: Dict[str, int] = defaultdict(int)
-    pending_by_tx: Dict[str, List[int]] = defaultdict(
-        list
-    )  # CDS lengths waiting for mRNA mapping
+    gene_first_start: Dict[str, int] = {}
+    pending_by_tx: Dict[str, List[tuple[int, int]]] = defaultdict(list)
 
     # For UTR computation (whole-genome)
     seq_range: Tuple[int, int] | None = None
@@ -150,7 +149,7 @@ def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
                         gname = tx_id_to_gene_name.get(tid)
                         if not gname:
                             # Defer until after we see the mRNA
-                            pending_by_tx[tid].append(cds_len)
+                            pending_by_tx[tid].append((cds_len, start_i))
                             continue  # will add later once tx->gene is known
 
                 if not gname:
@@ -158,6 +157,11 @@ def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
                     continue
 
                 gene_cds_bp[str(gname)] += cds_len
+                if gname is not None:
+                    current = gene_first_start.get(str(gname))
+                    gene_first_start[str(gname)] = (
+                        start_i if current is None else min(current, start_i)
+                    )
 
     # --- Resolve any pending CDS whose transcripts appeared after
     for tid, lengths in pending_by_tx.items():
@@ -167,7 +171,13 @@ def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
             gname = tid
         if not gname:
             continue
-        gene_cds_bp[str(gname)] += sum(lengths)
+        gene_cds_bp[str(gname)] += sum(length for length, _ in lengths)
+        if gname is not None:
+            current = gene_first_start.get(str(gname))
+            first_start = min(start for _, start in lengths)
+            gene_first_start[str(gname)] = (
+                first_start if current is None else min(current, first_start)
+            )
 
     # --- Add UTRs if we have genome bounds
     if seq_range and first_cds_start is not None and last_cds_end is not None:
@@ -180,4 +190,11 @@ def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
     # Conventional placeholder
     gene_cds_bp["INTERGENIC"] = 1
 
-    return dict(gene_cds_bp)
+    ordered = {
+        gene: gene_cds_bp[gene]
+        for gene in sorted(
+            gene_cds_bp.keys(), key=lambda g: gene_first_start.get(g, float("inf"))
+        )
+    }
+
+    return ordered

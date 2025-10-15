@@ -9,6 +9,7 @@ import string
 from typing import Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
@@ -326,37 +327,44 @@ def _build_gene_order_map(
 ) -> Tuple[Dict[str, int], List[str]]:
     """Build an ordered mapping of genes (and NSPs) following 5' to 3'."""
 
+    base_order = (
+        list(gene_lengths.keys())
+        if gene_lengths is not None
+        else list(REF_GENE_LENGTHS.keys())
+    )
+
+    nsps = list(cast(Sequence[str], NSPS.get("product", [])))
+
     order: List[str] = []
-
-    if gene_lengths is None:
+    if "5' UTR" in base_order or gene_lengths is None:
         order.append("5' UTR")
-        if include_nsps:
-            nsp_products = cast(Sequence[str], NSPS.get("product", []))
-            order.extend(nsp_products)
 
-        for gene in REF_GENE_LENGTHS.keys():
-            if gene in {"5' UTR", "ORF1ab"}:
-                continue
+    if include_nsps:
+        order.extend(nsps)
+
+    for gene in base_order:
+        if gene in {"5' UTR", "ORF1ab"}:
+            continue
+        if gene not in order:
             order.append(gene)
-    else:
-        order.extend(gene_lengths.keys())
 
-    # Ensure unique ordering while preserving sequence
+    if include_nsps and "ORF1ab" in base_order:
+        order.append("ORF1ab")
+
     seen = set()
-    unique_order: List[str] = []
+    ordered = []
     for gene in order:
         if gene and gene not in seen:
-            unique_order.append(gene)
+            ordered.append(gene)
             seen.add(gene)
 
-    gene_order_map = {gene: idx for idx, gene in enumerate(unique_order)}
+    gene_order_map = {gene: idx for idx, gene in enumerate(ordered)}
     if include_nsps and "nsp1" in gene_order_map:
         gene_order_map.setdefault("ORF1ab", gene_order_map["nsp1"])
 
-    # Fallback bucket for anything unexpected
     gene_order_map.setdefault("INTERGENIC", len(gene_order_map))
 
-    return gene_order_map, unique_order
+    return gene_order_map, ordered
 
 
 def _map_orf1ab_position_to_nsp(aa_position: int) -> str:
@@ -495,9 +503,20 @@ def _prepare_variant_heatmap_matrix(
             s.strip() for s in str(table.iloc[0]["samples"]).split(" / ")
         ]
 
-    gene_order_map, _ = _build_gene_order_map(
-        gene_lengths, include_nsps=gene_lengths is None
-    )
+    use_nsps = True
+    if gene_lengths is not None:
+        use_nsps = False
+        if "gene" in table.columns:
+            genes_series = table["gene"].astype(str)
+            use_nsps = (
+                genes_series.isin(cast(Sequence[str], NSPS.get("product", []))).any()
+                or genes_series.eq("ORF1ab").any()
+            )
+
+        if not use_nsps and "nsp_aa_change" in table.columns:
+            use_nsps = table["nsp_aa_change"].astype(str).str.contains(":").any()
+
+    gene_order_map, _ = _build_gene_order_map(gene_lengths, include_nsps=use_nsps)
 
     records: List[Dict[str, Union[str, float, int]]] = []
     seen_labels = set()
@@ -587,12 +606,15 @@ def generate_variant_heatmap(
 
         heatmap_path = os.path.join(outdir, "variant_allele_frequency_heatmap.pdf")
 
-        fig_width = max(4, 0.65 * len(heatmap_data.columns))
+        fig_width = max(4, 1.2 * len(heatmap_data.columns))
         fig_height = max(4, 0.4 * len(heatmap_data))
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        plot_data = heatmap_data.replace(0, np.nan)
+        cmap = sns.color_palette("viridis", as_cmap=True).copy()
+        cmap.set_bad(color="#d9d9d9")
         sns.heatmap(
-            heatmap_data,
-            cmap="viridis",
+            plot_data,
+            cmap=cmap,
             vmin=0,
             vmax=1,
             cbar_kws={"label": "Variant allele frequency"},

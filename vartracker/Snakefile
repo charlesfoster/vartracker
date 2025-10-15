@@ -64,6 +64,7 @@ if MODE == "reads":
     rule fastp:
         input:
             r1 = lambda w: _require_value(w.sample, "reads1"),
+        params:
             r2 = lambda w: _value_or_blank(w.sample, "reads2", allow_blank=True)
         output:
             r1 = temp(f"{OUTDIR}/{{sample}}/trimmed_R1.fastq.gz"),
@@ -74,8 +75,8 @@ if MODE == "reads":
         shell:
             """
             mkdir -p {OUTDIR}/{wildcards.sample}
-            if [ -n "{input.r2}" ]; then
-                fastp -i {input.r1} -I {input.r2} \
+            if [ -n "{params.r2}" ]; then
+                fastp -i {input.r1} -I {params.r2} \
                     -o {output.r1} -O {output.r2} \
                     -w {threads} \
                     --detect_adapter_for_pe \
@@ -148,7 +149,7 @@ if MODE == "reads":
             else:
                 shell("""
                     cp {input.bam} {output.bam}
-                    cp {input.bam}.bai {output.bam}.bai
+                    samtools index {output.bam}
                     touch {output.log}
                 """)
 

@@ -44,8 +44,14 @@ def test_validate_dependencies_passes_when_available(mock_check):
     return_value={"bcftools": False, "tabix": True},
 )
 def test_validate_dependencies_raises_when_missing(mock_check):
-    with pytest.raises(DependencyError, match="Missing required tools: bcftools"):
+    with pytest.raises(DependencyError) as excinfo:
         main_module.validate_dependencies()
+    message = str(excinfo.value)
+    assert (
+        "Dependency error: to run the vcf mode the following tools must be available: bcftools"
+        in message
+    )
+    assert "conda install -c bioconda bcftools" in excinfo.value.tip
     mock_check.assert_called_once()
 
 
@@ -75,7 +81,7 @@ def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(main_module, "validate_dependencies", lambda: None)
+    monkeypatch.setattr(main_module, "validate_dependencies", lambda mode="vcf": None)
 
     def fake_setup(args):
         args.reference = "/tmp/mock_reference.fasta"
@@ -150,6 +156,13 @@ def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
 
     recorded = {}
 
+    modes_checked = []
+
+    def fake_validate(mode="vcf"):
+        modes_checked.append(mode)
+
+    monkeypatch.setattr(main_module, "validate_dependencies", fake_validate)
+
     def fake_workflow(**kwargs):
         recorded["workflow_kwargs"] = kwargs
         return str(updated_csv)
@@ -192,6 +205,7 @@ def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     assert recorded["workflow_kwargs"]["quiet"] is True
     assert recorded["workflow_kwargs"]["mode"] == "reads"
     assert recorded["vcf_input"] == str(updated_csv)
+    assert modes_checked == ["e2e"]
 
 
 def test_e2e_dryrun_skips_vcf(monkeypatch, tmp_path_factory):
@@ -205,6 +219,13 @@ def test_e2e_dryrun_skips_vcf(monkeypatch, tmp_path_factory):
         f"Sample1,0,{reads1},{reads2},,,\n",
         encoding="utf-8",
     )
+
+    modes_checked = []
+
+    def fake_validate(mode="vcf"):
+        modes_checked.append(mode)
+
+    monkeypatch.setattr(main_module, "validate_dependencies", fake_validate)
 
     def fake_workflow(**kwargs):
         assert kwargs["force_all"] is True
@@ -231,6 +252,7 @@ def test_e2e_dryrun_skips_vcf(monkeypatch, tmp_path_factory):
     )
 
     assert exit_code == 0
+    assert modes_checked == ["e2e"]
 
 
 def test_e2e_verbose_enables_snakemake_commands(monkeypatch, tmp_path):
@@ -257,6 +279,13 @@ def test_e2e_verbose_enables_snakemake_commands(monkeypatch, tmp_path):
         f"Sample1,0,{reads1},{reads2},,,\n",
         encoding="utf-8",
     )
+
+    modes_checked = []
+
+    def fake_validate(mode="vcf"):
+        modes_checked.append(mode)
+
+    monkeypatch.setattr(main_module, "validate_dependencies", fake_validate)
 
     def fake_workflow(**kwargs):
         recorded.update(kwargs)
@@ -286,6 +315,7 @@ def test_e2e_verbose_enables_snakemake_commands(monkeypatch, tmp_path):
     assert recorded["mode"] == "reads"
     assert recorded["vcf_input"] == str(updated_csv)
     assert recorded["suppress_logo"] is True
+    assert modes_checked == ["e2e"]
 
 
 def test_bam_runs_snakemake_then_vcf(monkeypatch, tmp_path):
@@ -310,6 +340,13 @@ def test_bam_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     )
 
     recorded = {}
+
+    modes_checked = []
+
+    def fake_validate(mode="vcf"):
+        modes_checked.append(mode)
+
+    monkeypatch.setattr(main_module, "validate_dependencies", fake_validate)
 
     def fake_workflow(**kwargs):
         recorded.update(kwargs)
@@ -340,6 +377,7 @@ def test_bam_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     assert recorded["mode"] == "bam"
     assert recorded["vcf_input"] == str(updated_csv)
     assert recorded["suppress_logo"] is True
+    assert modes_checked == ["bam"]
 
 
 def test_bam_dryrun_skips_vcf(monkeypatch, tmp_path):
@@ -351,6 +389,13 @@ def test_bam_dryrun_skips_vcf(monkeypatch, tmp_path):
         f"Sample1,0,,,{bam_path},,\n",
         encoding="utf-8",
     )
+
+    modes_checked = []
+
+    def fake_validate(mode="vcf"):
+        modes_checked.append(mode)
+
+    monkeypatch.setattr(main_module, "validate_dependencies", fake_validate)
 
     def fake_workflow(**kwargs):
         assert kwargs["mode"] == "bam"
@@ -374,3 +419,169 @@ def test_bam_dryrun_skips_vcf(monkeypatch, tmp_path):
     )
 
     assert exit_code == 0
+    assert modes_checked == ["bam"]
+
+
+def test_bam_test_mode_uses_demo_dataset(monkeypatch, tmp_path):
+    recorded = {}
+
+    def fake_validate(mode="vcf"):
+        recorded.setdefault("modes", []).append(mode)
+
+    monkeypatch.setattr(main_module, "validate_dependencies", fake_validate)
+
+    mock_csv = tmp_path / "demo.csv"
+    mock_bam = tmp_path / "demo.bam"
+    mock_bam.write_text("", encoding="utf-8")
+    mock_pokay = tmp_path / "mock.csv"
+    mock_pokay.write_text("", encoding="utf-8")
+    mock_csv.write_text(
+        "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+        f"Demo,0,,,{mock_bam},,\n",
+        encoding="utf-8",
+    )
+
+    class DummyTemp:
+        def __init__(self):
+            self.cleaned = False
+
+        def cleanup(self):
+            self.cleaned = True
+            recorded["cleanup_called"] = True
+
+    temp_holder = DummyTemp()
+
+    def fake_prepare(args, mode):
+        recorded["prepare_mode"] = mode
+        args.search_pokay = True
+        args.download_pokay = False
+        args.pokay_csv = str(mock_pokay)
+        args._test_data_dir = str(tmp_path)
+        if args.name is None:
+            args.name = "demo"
+        return temp_holder, mock_csv
+
+    monkeypatch.setattr(main_module, "_prepare_test_run", fake_prepare)
+
+    updated_csv = tmp_path / "updated.csv"
+    updated_csv.write_text(
+        "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+        f"Demo,0,,,,{tmp_path / 'demo.vcf'},{tmp_path / 'demo.cov'}\n",
+        encoding="utf-8",
+    )
+
+    def fake_workflow(**kwargs):
+        recorded["workflow_kwargs"] = kwargs
+        return str(updated_csv)
+
+    monkeypatch.setattr(main_module, "run_e2e_workflow", fake_workflow)
+
+    def fake_vcf(args):
+        recorded["vcf_args"] = {
+            "input_csv": args.input_csv,
+            "test_flag": getattr(args, "test", None),
+            "suppress": getattr(args, "_suppress_logo", False),
+        }
+        return 0
+
+    monkeypatch.setattr(main_module, "_run_vcf_command", fake_vcf)
+
+    exit_code = main_module.main(
+        [
+            "bam",
+            "--test",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["prepare_mode"] == "bam"
+    assert recorded["workflow_kwargs"]["samples_csv"] == str(mock_csv)
+    assert recorded["vcf_args"]["input_csv"] == str(updated_csv)
+    assert recorded["vcf_args"]["test_flag"] is False
+    assert recorded["vcf_args"]["suppress"] is True
+    assert recorded["modes"] == ["bam"]
+    assert recorded.get("cleanup_called") is True
+
+
+def test_e2e_test_mode_uses_demo_dataset(monkeypatch, tmp_path):
+    recorded = {}
+
+    def fake_validate(mode="vcf"):
+        recorded.setdefault("modes", []).append(mode)
+
+    monkeypatch.setattr(main_module, "validate_dependencies", fake_validate)
+
+    mock_csv = tmp_path / "reads.csv"
+    mock_r1 = tmp_path / "reads_1.fq"
+    mock_r2 = tmp_path / "reads_2.fq"
+    mock_r1.write_text("", encoding="utf-8")
+    mock_r2.write_text("", encoding="utf-8")
+    mock_pokay = tmp_path / "mock.csv"
+    mock_pokay.write_text("", encoding="utf-8")
+    mock_csv.write_text(
+        "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+        f"Demo,0,{mock_r1},{mock_r2},,,\n",
+        encoding="utf-8",
+    )
+
+    class DummyTemp:
+        def __init__(self):
+            self.cleaned = False
+
+        def cleanup(self):
+            self.cleaned = True
+            recorded["cleanup_called"] = True
+
+    temp_holder = DummyTemp()
+
+    def fake_prepare(args, mode):
+        recorded["prepare_mode"] = mode
+        args.search_pokay = True
+        args.download_pokay = False
+        args.pokay_csv = str(mock_pokay)
+        args._test_data_dir = str(tmp_path)
+        if args.name is None:
+            args.name = "demo"
+        return temp_holder, mock_csv
+
+    monkeypatch.setattr(main_module, "_prepare_test_run", fake_prepare)
+
+    updated_csv = tmp_path / "updated.csv"
+    updated_csv.write_text(
+        "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+        f"Demo,0,,,,{tmp_path / 'demo.vcf'},{tmp_path / 'demo.cov'}\n",
+        encoding="utf-8",
+    )
+
+    def fake_workflow(**kwargs):
+        recorded["workflow_kwargs"] = kwargs
+        return str(updated_csv)
+
+    monkeypatch.setattr(main_module, "run_e2e_workflow", fake_workflow)
+
+    def fake_vcf(args):
+        recorded["vcf_args"] = {
+            "input_csv": args.input_csv,
+            "test_flag": getattr(args, "test", None),
+            "suppress": getattr(args, "_suppress_logo", False),
+        }
+        return 0
+
+    monkeypatch.setattr(main_module, "_run_vcf_command", fake_vcf)
+
+    exit_code = main_module.main(
+        [
+            "end-to-end",
+            "--test",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["prepare_mode"] == "e2e"
+    assert recorded["workflow_kwargs"]["samples_csv"] == str(mock_csv)
+    assert recorded["workflow_kwargs"]["mode"] == "reads"
+    assert recorded["vcf_args"]["input_csv"] == str(updated_csv)
+    assert recorded["vcf_args"]["test_flag"] is False
+    assert recorded["vcf_args"]["suppress"] is True
+    assert recorded["modes"] == ["e2e"]
+    assert recorded.get("cleanup_called") is True
