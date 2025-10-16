@@ -94,6 +94,22 @@ pip install -e .[dev]
 pre-commit install
 ```
 
+### Docker
+
+Build a container image that bundles Python, vartracker, and all external bioinformatics tools:
+
+```bash
+docker build -t vartracker:latest .
+```
+
+Run workflows by mounting your data directory into the container. The command below analyses an input CSV located in the current directory and writes results beside it:
+
+```bash
+docker run --rm -v "$(pwd)":/workspace vartracker \
+  vcf /workspace/inputs/vcf_inputs.csv \
+  --outdir /workspace/results
+```
+
 ## Quick Start
 
 After installation, `vartracker` will be available as a command-line tool:
