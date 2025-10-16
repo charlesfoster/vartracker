@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pandas as pd
 
-from vartracker.analysis import search_pokay, _prepare_variant_heatmap_matrix
+from vartracker.analysis import (
+    search_pokay,
+    _prepare_variant_heatmap_matrix,
+    generate_variant_heatmap,
+)
 
 
 def test_search_pokay_handles_nullable_boolean_masks(tmp_path):
@@ -136,3 +140,90 @@ def test_prepare_variant_heatmap_matrix_orders_variants_by_genome():
     assert matrix.loc["nsp2:T809=\n(C1059T)", "P1"] == 0.5
     assert matrix.loc[expected_long_label, "P1"] == 0.8
     assert matrix.loc["S:D215G\n(A22206G)", "P1"] == 1.0
+
+
+def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch):
+    mpl_dir = tmp_path / "mpl"
+    mpl_dir.mkdir()
+    monkeypatch.setenv("MPLCONFIGDIR", str(mpl_dir))
+
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "S",
+                "amino_acid_consequence": "D215G",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "alt_freq": "0.0 / 0.5",
+                "samples": "P0 / P1",
+                "variant": "A22206G",
+                "start": 22206,
+                "variant_status": "new",
+                "presence_absence": "N / Y",
+            },
+            {
+                "gene": "ORF1ab",
+                "amino_acid_consequence": "",
+                "nsp_aa_change": "nsp6_TM:L37F",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "alt_freq": "0.2 / 0.6",
+                "samples": "P0 / P1",
+                "variant": "C21575T",
+                "start": 21575,
+                "variant_status": "new",
+                "presence_absence": "N / Y",
+            },
+        ]
+    )
+
+    pokay_hits = pd.DataFrame(
+        {
+            "gene": ["S", "nsp6"],
+            "amino_acid_consequence": ["D215G", "L37F"],
+            "database_mutation_string": ["S:D215G", "nsp6:L37F"],
+            "category": ["Functional impact", "Functional impact"],
+            "prior_information": ["Info", "Additional"],
+            "reference": ["PMID123; 10.1000/xyz123", "10.2000/abc456"],
+        }
+    )
+
+    pokay_csv = tmp_path / "sample.pokay_database_hits.full.csv"
+    pokay_hits.to_csv(pokay_csv, index=False)
+
+    command_str = "vartracker vcf input.csv --outdir results"
+
+    generate_variant_heatmap(
+        table,
+        ["P0", "P1"],
+        [0, 1],
+        str(tmp_path),
+        "Example",
+        0.05,
+        0.05,
+        pokay_hits=pokay_hits,
+        pokay_table_path=str(pokay_csv),
+        cli_command=command_str,
+    )
+
+    pdf_path = tmp_path / "variant_allele_frequency_heatmap.pdf"
+    html_path = tmp_path / "variant_allele_frequency_heatmap.html"
+
+    assert pdf_path.exists()
+    assert html_path.exists()
+
+    content = html_path.read_text(encoding="utf-8")
+    assert "Interactive variant heatmap" in content
+    assert "Workflow summary" in content
+    assert command_str in content
+    assert "heatmap-grid" in content
+    assert "heatmap-scroll" in content
+    assert "Pokay results" in content
+    assert "table-scroll" in content
+    assert "heatmap-anchor" in content
+    assert 'data-anchor="s:d215g' in content
+    assert 'data-anchor="nsp6:l37f' in content
+    assert ">10.1000/xyz123</a>" in content
+    assert ".cell:hover .cell-value" in content
+    assert "clearActive" in content

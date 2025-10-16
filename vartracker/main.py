@@ -479,6 +479,11 @@ def main(sysargs=None):
         code = exc.code if isinstance(exc.code, int) else 0
         return code
 
+    invocation = "vartracker"
+    if sysargs:
+        invocation = f"vartracker {' '.join(sysargs)}"
+    setattr(args, "_invocation", invocation)
+
     handler = getattr(args, "handler", None)
     if handler is None:
         parser.print_help()
@@ -916,6 +921,8 @@ def _process_files(
     """Process files in the given temporary directory."""
     print("Pre-processing VCF files for compatibility...")
 
+    cli_command = getattr(args, "_invocation", None)
+
     pokay_df = pokay
 
     if args.search_pokay and pokay_df is None and args.download_pokay:
@@ -995,6 +1002,18 @@ def _process_files(
     else:
         table = pd.read_csv(outfile, keep_default_na=False)
 
+    pokay_hits_df = None
+    pokay_full_csv_path = None
+    if args.search_pokay and pokay_df is not None:
+        new_mutations_subset = table[table["variant_status"] == "new"]
+        pokay_name = args.name if args.name else "sample"
+        pokay_hits_df = search_pokay(
+            new_mutations_subset, pokay_df, args.outdir, pokay_name, args.debug
+        )
+        pokay_full_csv_path = os.path.join(
+            args.outdir, f"{pokay_name}.pokay_database_hits.full.csv"
+        )
+
     # Generate plots and analysis
     print("Plotting results...")
     generate_cumulative_lineplot(
@@ -1015,6 +1034,9 @@ def _process_files(
         args.min_snv_freq,
         args.min_indel_freq,
         gene_lengths=gene_lengths,
+        pokay_hits=pokay_hits_df,
+        pokay_table_path=pokay_full_csv_path,
+        cli_command=cli_command,
     )
 
     # Write specialized tables
@@ -1029,12 +1051,6 @@ def _process_files(
     persistent_mutations.to_csv(
         os.path.join(args.outdir, "persistent_new_mutations.csv"), index=None
     )
-
-    # Search pokay database
-    if args.search_pokay and pokay_df is not None:
-        new_mutations_table = table[table["variant_status"] == "new"]
-        pokay_name = args.name if args.name else "sample"
-        search_pokay(new_mutations_table, pokay_df, args.outdir, pokay_name, args.debug)
 
 
 if __name__ == "__main__":

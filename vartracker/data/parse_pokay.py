@@ -7,6 +7,7 @@ import glob
 import json
 import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence
@@ -84,27 +85,58 @@ def has_pokay_text_files(path: str) -> bool:
     return os.path.isdir(path) and bool(glob.glob(os.path.join(path, "*.txt")))
 
 
+def _fetch_bytes(url: str, headers: dict[str, str] | None = None) -> bytes:
+    """Fetch bytes from the given URL, falling back to curl if SSL is unavailable."""
+
+    request_headers = headers or {}
+    request = Request(url, headers=request_headers)
+
+    try:
+        with urlopen(request) as response:
+            return response.read()
+    except HTTPError:
+        raise
+    except URLError as exc:
+        reason = getattr(exc, "reason", "")
+        if (
+            isinstance(reason, str)
+            and "unknown url type" in reason
+            and shutil.which("curl")
+        ):
+            curl_cmd = ["curl", "-fsSL"]
+            for key, value in request_headers.items():
+                curl_cmd.extend(["-H", f"{key}: {value}"])
+            curl_cmd.append(url)
+            result = subprocess.run(
+                curl_cmd, capture_output=True, check=False
+            )  # pragma: no cover - network fallback only
+            if result.returncode == 0:
+                return result.stdout
+            raise RuntimeError(
+                f"curl failed to fetch {url}: {result.stderr.decode('utf-8', 'ignore').strip()}"
+            ) from exc
+        raise
+
+
 def download_pokay_files(target_dir: str) -> None:
     """Download pokay literature text files into the target directory."""
     os.makedirs(target_dir, exist_ok=True)
 
-    request = Request(
-        GITHUB_CONTENTS_URL,
-        headers={
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "vartracker",
-        },
-    )
+    headers = {
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "vartracker",
+    }
 
     try:
-        with urlopen(request) as response:
-            payload = response.read()
+        payload = _fetch_bytes(GITHUB_CONTENTS_URL, headers=headers)
     except HTTPError as exc:  # pragma: no cover - network failure
         raise RuntimeError(
             f"Failed to list pokay literature files: {exc.code} {exc.reason}"
         ) from exc
     except URLError as exc:  # pragma: no cover - network failure
         raise RuntimeError(f"Failed to reach GitHub: {exc.reason}") from exc
+    except RuntimeError as exc:  # pragma: no cover - curl failure
+        raise RuntimeError(str(exc)) from exc
 
     try:
         entries = json.loads(payload.decode("utf-8"))
@@ -125,14 +157,18 @@ def download_pokay_files(target_dir: str) -> None:
 
         destination = os.path.join(target_dir, file_name)
         try:
-            with urlopen(download_url) as source, open(destination, "wb") as handle:
-                shutil.copyfileobj(source, handle)
+            payload = _fetch_bytes(download_url)
         except HTTPError as exc:  # pragma: no cover - network failure
             raise RuntimeError(
                 f"Failed to download {file_name}: {exc.code} {exc.reason}"
             ) from exc
         except URLError as exc:  # pragma: no cover - network failure
             raise RuntimeError(f"Failed to download {file_name}: {exc.reason}") from exc
+        except RuntimeError as exc:  # pragma: no cover - curl failure
+            raise RuntimeError(str(exc)) from exc
+
+        with open(destination, "wb") as handle:
+            handle.write(payload)
 
 
 @dataclass

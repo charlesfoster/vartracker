@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from io import BytesIO
 
 import pandas as pd
@@ -81,6 +82,38 @@ def test_download_pokay_files(monkeypatch, tmp_path):
         raise AssertionError(f"Unexpected URL requested: {url}")
 
     monkeypatch.setattr(parse_pokay, "urlopen", fake_urlopen)
+
+    parse_pokay.download_pokay_files(str(target_dir))
+
+    downloaded = target_dir / "file1.txt"
+    assert downloaded.exists()
+    assert downloaded.read_bytes() == file_payload
+
+
+def test_download_pokay_files_falls_back_to_curl(monkeypatch, tmp_path):
+    target_dir = tmp_path / "pokay"
+
+    listing = json.dumps(
+        [{"name": "file1.txt", "download_url": "https://example.com/file1.txt"}]
+    ).encode("utf-8")
+
+    file_payload = b"mutation data"
+
+    def fake_urlopen(_request):
+        raise parse_pokay.URLError("unknown url type: https")
+
+    monkeypatch.setattr(parse_pokay, "urlopen", fake_urlopen)
+    monkeypatch.setattr(parse_pokay.shutil, "which", lambda *_: "/usr/bin/curl")
+
+    def fake_run(cmd, capture_output, check):
+        url = cmd[-1]
+        if url == parse_pokay.GITHUB_CONTENTS_URL:
+            return subprocess.CompletedProcess(cmd, 0, listing, b"")
+        if url == "https://example.com/file1.txt":
+            return subprocess.CompletedProcess(cmd, 0, file_payload, b"")
+        return subprocess.CompletedProcess(cmd, 1, b"", b"unexpected")
+
+    monkeypatch.setattr(parse_pokay.subprocess, "run", fake_run)
 
     parse_pokay.download_pokay_files(str(target_dir))
 

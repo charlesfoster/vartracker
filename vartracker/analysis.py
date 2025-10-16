@@ -4,7 +4,9 @@ Analysis and plotting functionality for vartracker.
 Contains functions for generating plots and analyzing mutation patterns.
 """
 
+import html
 import os
+import re
 import string
 from typing import Dict, List, Optional, Sequence, Tuple, Union, cast
 
@@ -13,8 +15,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 import seaborn as sns
-
 from .constants import REF_GENE_LENGTHS, NSP_LENGTHS, NSPS
+from .core import get_logo
 
 # Global configuration for plotting
 plt.rcdefaults()
@@ -573,15 +575,485 @@ def _prepare_variant_heatmap_matrix(
     if not records:
         return pd.DataFrame(columns=ordered_samples)
 
-    matrix = pd.DataFrame(records)
-    matrix = matrix.sort_values(["gene_order", "start", "base_label"])
-    matrix = matrix.drop(columns=["gene_order", "start"], errors="ignore")
-    matrix = matrix.drop_duplicates(subset=["base_label"]).set_index("label")
-    matrix = matrix.drop(columns=["base_label"], errors="ignore")
+    matrix_df = pd.DataFrame(records)
+    matrix_df = matrix_df.sort_values(["gene_order", "start", "base_label"])
+    matrix_df = matrix_df.drop(columns=["gene_order", "start"], errors="ignore")
+    matrix_df = matrix_df.drop_duplicates(subset=["base_label"])
+    base_label_map = dict(zip(matrix_df["label"], matrix_df["base_label"]))
+    canonical_label_map = {
+        label: _canonical_label(base_label)
+        for label, base_label in base_label_map.items()
+    }
+    matrix_df = matrix_df.set_index("label")
+    matrix_df = matrix_df.drop(columns=["base_label"], errors="ignore")
 
-    matrix = matrix.loc[matrix.max(axis=1) > 0]
+    matrix_df = matrix_df.loc[matrix_df.max(axis=1) > 0]
+    matrix_df = matrix_df.reindex(columns=ordered_samples).fillna(0.0)
+    matrix_df.attrs["base_labels"] = base_label_map
+    matrix_df.attrs["canonical_labels"] = canonical_label_map
 
-    return matrix.reindex(columns=ordered_samples).fillna(0.0)
+    return matrix_df
+
+
+def _normalise_base_label(gene: str | None, amino_change: str | None) -> str:
+    gene = str(gene or "").strip()
+    amino_change = str(amino_change or "").strip()
+    if amino_change and amino_change.startswith(f"{gene}:"):
+        return amino_change
+    if gene and amino_change:
+        return f"{gene}:{amino_change}"
+    return amino_change or gene
+
+
+def _slugify_anchor(value: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z]+", "-", value).strip("-").lower()
+    if not cleaned:
+        cleaned = "entry"
+    return f"pokay-{cleaned}"
+
+
+def _canonical_label(value: str) -> str:
+    if not value:
+        return ""
+    gene, _, aa = str(value).partition(":")
+    gene_root = gene.split("_", 1)[0]
+    gene_norm = re.sub(r"[^0-9a-z]+", "", gene_root.lower())
+    aa_norm = re.sub(r"[^0-9a-z]+", "", aa.lower()) if aa else ""
+    return f"{gene_norm}:{aa_norm}" if aa_norm else gene_norm
+
+
+def _linkify_reference_cell(text: str) -> str:
+    if not text:
+        return ""
+
+    pattern = re.compile(r"(https?://[^\s;]+)|(10\.\d{4,9}/[^\s;]+)", re.IGNORECASE)
+    result: List[str] = []
+    last = 0
+
+    for match in pattern.finditer(text):
+        result.append(html.escape(text[last : match.start()]))
+        token = match.group(0)
+        if token.lower().startswith("http"):
+            href = token if token.lower().startswith("http") else f"https://{token}"
+        else:
+            href = f"https://doi.org/{token}"
+        link = (
+            f'<a href="{html.escape(href)}" target="_blank" rel="noopener">'
+            f"{html.escape(token)}</a>"
+        )
+        result.append(link)
+        last = match.end()
+
+    result.append(html.escape(text[last:]))
+    return "".join(result)
+
+
+def _build_pokay_table_html(
+    df: Optional[pd.DataFrame],
+    anchor_lookup: Dict[str, str],
+    table_path: Optional[str],
+) -> str:
+    if df is None or df.empty:
+        return '<p class="pokay-empty">No pokay matches were found for the new mutations.</p>'
+
+    columns = [html.escape(str(col)) for col in df.columns]
+    header_cells = "".join(f"<th>{col}</th>" for col in columns)
+    header_html = f"<thead><tr>{header_cells}</tr></thead>"
+
+    body_rows: List[str] = []
+    primary_rows: set[str] = set()
+    for idx, row in df.iterrows():
+        base_label = _normalise_base_label(
+            row.get("gene"), row.get("amino_acid_consequence")
+        )
+        canonical_key = _canonical_label(base_label)
+        anchor_id = anchor_lookup.get(
+            canonical_key, _slugify_anchor(canonical_key or f"{base_label}-{idx}")
+        )
+        body_cells = []
+        for col in df.columns:
+            value = row.get(col, "")
+            if pd.isna(value):
+                value = ""
+            if str(col).lower() == "reference":
+                rendered = _linkify_reference_cell(str(value))
+            else:
+                rendered = html.escape(str(value))
+            body_cells.append(f"<td>{rendered}</td>")
+        if canonical_key not in primary_rows and anchor_id:
+            row_attrs = f'id="{anchor_id}" data-anchor="{canonical_key}"'
+            primary_rows.add(canonical_key)
+        else:
+            row_attrs = f'data-anchor="{canonical_key}"'
+        body_rows.append(
+            f"<tr {row_attrs} class=\"pokay-row\">{''.join(body_cells)}</tr>"
+        )
+
+    caption = ""
+    if table_path:
+        caption = f'<caption class="info-note">Source: {html.escape(os.path.basename(table_path))}</caption>'
+
+    body_html = "<tbody>" + "".join(body_rows) + "</tbody>"
+    return f'<table class="pokay-table">{caption}{header_html}{body_html}</table>'
+
+
+def _write_interactive_heatmap_html(
+    matrix: pd.DataFrame,
+    sample_names: Sequence[str],
+    outdir: str,
+    project_name: str,
+    pokay_df: Optional[pd.DataFrame],
+    pokay_table_path: Optional[str],
+    cli_command: Optional[str],
+) -> None:
+    if matrix.empty:
+        return
+
+    x_labels = [str(name) for name in sample_names]
+    y_labels = list(matrix.index)
+    if not x_labels or not y_labels:
+        return
+
+    label_map: Dict[str, str] = matrix.attrs.get("base_labels", {})
+    canonical_label_map: Dict[str, str] = matrix.attrs.get("canonical_labels", {})
+
+    if pokay_df is None and pokay_table_path and os.path.exists(pokay_table_path):
+        try:
+            pokay_df = pd.read_csv(pokay_table_path)
+        except Exception:
+            pokay_df = None
+
+    highlight_keys: Dict[str, str] = {}
+    if pokay_df is not None and not pokay_df.empty:
+        for _, prow in pokay_df.iterrows():
+            key = _normalise_base_label(
+                prow.get("gene"), prow.get("amino_acid_consequence")
+            )
+            canonical = _canonical_label(key)
+            if canonical:
+                highlight_keys.setdefault(canonical, _slugify_anchor(canonical))
+
+    cmap = mpl.colormaps.get_cmap("viridis")
+
+    def _frequency_to_color(value: float) -> tuple[str, str]:
+        if value is None or np.isnan(value) or value <= 0:
+            return "#d9d9d9", ""
+        clipped = float(np.clip(value, 0.0, 1.0))
+        rgba = cmap(clipped)
+        return mpl.colors.to_hex(rgba, keep_alpha=False), f"{clipped:.2f}"
+
+    grid_cells: List[str] = []
+    grid_cells.append('<div class="grid-header grid-corner">Variant</div>')
+    for sample in x_labels:
+        grid_cells.append(
+            f'<div class="grid-header grid-sample">{html.escape(sample)}</div>'
+        )
+
+    for label in y_labels:
+        base_label = label_map.get(label, label.replace("\n", " "))
+        canonical_key = canonical_label_map.get(label, _canonical_label(base_label))
+        anchor_id = highlight_keys.get(canonical_key)
+        safe_label = html.escape(label).replace("\n", "<br>")
+        if anchor_id:
+            header_html = (
+                '<div class="grid-header grid-variant">'
+                f'<a href="#pokay-results" class="heatmap-anchor" data-anchor="{canonical_key}">{safe_label}</a>'
+                "</div>"
+            )
+        else:
+            header_html = (
+                '<div class="grid-header grid-variant">'
+                f'<span class="heatmap-label">{safe_label}</span>'
+                "</div>"
+            )
+        grid_cells.append(header_html)
+
+        row_values = matrix.loc[label]
+        for sample, value in zip(x_labels, row_values):
+            freq = float(value) if value is not None else 0.0
+            color, text_value = _frequency_to_color(freq)
+            tooltip = html.escape(
+                f"Variant: {label.replace(chr(10), ' ')} • "
+                f"Sample: {sample} • "
+                f"Allele frequency: {freq:.3f}"
+            )
+            classes = ["cell"]
+            if not text_value:
+                classes.append("cell-empty")
+            cell_html = (
+                f'<div class="{" ".join(classes)}" '
+                f'style="background-color:{color};" '
+                f'data-tooltip="{tooltip}">'
+                f'<span class="cell-value">{html.escape(text_value)}</span>'
+                "</div>"
+            )
+            grid_cells.append(cell_html)
+
+    grid_style = f"grid-template-columns: minmax(280px, 320px) repeat({len(x_labels)}, minmax(120px, 1fr));"
+    heatmap_grid_html = (
+        f'<div class="heatmap-grid" style="{grid_style}">{"".join(grid_cells)}</div>'
+    )
+    heatmap_scroll_html = f'<div class="heatmap-scroll">{heatmap_grid_html}</div>'
+
+    heatmap_title = (
+        f"{project_name}: variant allele frequencies"
+        if project_name
+        else "Variant allele frequencies"
+    )
+
+    pokay_table_html = _build_pokay_table_html(
+        pokay_df, highlight_keys, pokay_table_path
+    )
+    logo_html = f'<pre class="logo">{html.escape(get_logo())}</pre>'
+    summary_html = ""
+    if cli_command:
+        summary_html = (
+            '<section class="card summary">'
+            "<h1>Workflow summary</h1>"
+            f'<p class="summary-text"><code>{html.escape(cli_command)}</code></p>'
+            "</section>"
+        )
+
+    html_doc = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{html.escape(heatmap_title)}</title>
+  <style>
+    body {{
+      margin: 0;
+      font-family: "Inter", "Segoe UI", sans-serif;
+      background: #f9fafb;
+      color: #111827;
+    }}
+    main {{
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 32px 24px 48px;
+    }}
+    .logo {{
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 16px;
+      border-radius: 12px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      overflow-x: auto;
+      font-size: 12px;
+      margin-bottom: 24px;
+      white-space: pre;
+    }}
+    .card {{
+      background: #ffffff;
+      border-radius: 16px;
+      box-shadow: 0 12px 24px rgba(15, 23, 42, 0.1);
+      padding: 24px;
+      margin-bottom: 32px;
+    }}
+    .card h1 {{
+      margin-top: 0;
+      font-size: 1.5rem;
+      color: #0f172a;
+    }}
+    .heatmap-scroll {{
+      width: 100%;
+      overflow-x: auto;
+      padding-bottom: 8px;
+    }}
+    .heatmap-grid {{
+      display: grid;
+      gap: 6px;
+      align-items: stretch;
+      width: max(100%, 960px);
+    }}
+    .grid-header {{
+      background: #111827;
+      color: #f8fafc;
+      padding: 12px 14px;
+      border-radius: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }}
+    .grid-header.grid-variant {{
+      justify-content: center;
+      text-align: center;
+      flex-direction: column;
+    }}
+    .grid-header.grid-sample {{
+      background: #1f2937;
+    }}
+    .cell {{
+      position: relative;
+      min-height: 60px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      color: #0f172a;
+      overflow: hidden;
+      transition: transform 0.15s ease;
+    }}
+    .cell-empty {{
+      color: #1f2937;
+    }}
+    .cell:hover {{
+      transform: scale(1.03);
+      z-index: 2;
+    }}
+    .cell::after {{
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 50%;
+      bottom: 100%;
+      transform: translate(-50%, -8px);
+      background: rgba(15, 23, 42, 0.92);
+      color: #f8fafc;
+      padding: 6px 10px;
+      border-radius: 6px;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+      font-size: 0.75rem;
+      transition: opacity 0.15s ease;
+    }}
+    .cell:hover::after {{
+      opacity: 1;
+    }}
+    .cell-value {{
+      pointer-events: none;
+      opacity: 0;
+      color: #f8fafc;
+      transition: opacity 0.15s ease;
+    }}
+    .cell:hover .cell-value {{
+      opacity: 1;
+    }}
+    .cell-empty .cell-value {{
+      display: none;
+    }}
+    .heatmap-anchor {{
+      color: #c0392b;
+      text-decoration: none;
+      font-weight: 600;
+    }}
+    .heatmap-anchor:hover {{
+      text-decoration: underline;
+    }}
+    .pokay-table {{
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 0.95rem;
+    }}
+    .pokay-table caption {{
+      caption-side: bottom;
+      text-align: left;
+      padding-top: 8px;
+    }}
+    .pokay-table th,
+    .pokay-table td {{
+      border: 1px solid #e5e7eb;
+      padding: 8px 12px;
+      text-align: left;
+      vertical-align: top;
+    }}
+    .pokay-table th {{
+      background: #f3f4f6;
+      font-weight: 600;
+    }}
+    .pokay-table tr:nth-child(even) {{
+      background: #f9fafb;
+    }}
+    .pokay-row.is-active {{
+      background: #fff6c7 !important;
+      box-shadow: inset 0 0 0 2px #facc15 !important;
+    }}
+    .pokay-empty {{
+      color: #6b7280;
+      margin: 0;
+    }}
+    .info-note {{
+      color: #6b7280;
+      font-size: 0.9rem;
+      margin-top: 12px;
+    }}
+    .summary-text {{
+      margin: 0;
+    }}
+    .summary-text code {{
+      display: block;
+      background: #111827;
+      color: #f8fafc;
+      padding: 12px 14px;
+      border-radius: 10px;
+      font-family: "Fira Code", "SFMono-Regular", monospace;
+      font-size: 0.9rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+      box-shadow: inset 0 0 0 1px rgba(248, 250, 252, 0.1);
+    }}
+    .table-scroll {{
+      width: 100%;
+      overflow-x: auto;
+      padding-bottom: 8px;
+    }}
+  </style>
+</head>
+<body>
+  <main>
+    {logo_html}
+    {summary_html}
+    <section class="card">
+      <h1>Interactive variant heatmap</h1>
+      <p class="info-note">Hover to view exact allele frequencies. Click highlighted variants to jump to supporting pokay annotations.</p>
+      {heatmap_scroll_html}
+    </section>
+    <section class="card" id="pokay-results">
+      <h1>Pokay results</h1>
+      <div class="table-scroll">{pokay_table_html}</div>
+    </section>
+  </main>
+  <script>
+    (function() {{
+      const anchors = Array.from(document.querySelectorAll('.heatmap-anchor'));
+      const rows = Array.from(document.querySelectorAll('.pokay-row'));
+      const clearActive = () => rows.forEach(row => {{
+        row.classList.remove('is-active');
+        row.style.backgroundColor = '';
+        row.style.boxShadow = '';
+      }});
+      anchors.forEach(anchor => {{
+        anchor.addEventListener('click', event => {{
+          const target = anchor.getAttribute('data-anchor');
+          if (!target) {{ return; }}
+          const matches = rows.filter(row => row.getAttribute('data-anchor') === target);
+          if (!matches.length) {{ return; }}
+          event.preventDefault();
+          clearActive();
+          matches.forEach(row => {{
+            row.classList.add('is-active');
+            row.style.backgroundColor = '#fff6c7';
+            row.style.boxShadow = 'inset 0 0 0 2px #facc15';
+          }});
+          matches[0].scrollIntoView({{ behavior: 'smooth', block: 'center' }});
+          history.replaceState(null, '', '#pokay-results');
+        }});
+      }});
+    }})();
+  </script>
+</body>
+</html>
+"""
+
+    output_path = os.path.join(outdir, "variant_allele_frequency_heatmap.html")
+    with open(output_path, "w", encoding="utf-8") as handle:
+        handle.write(html_doc)
 
 
 def generate_variant_heatmap(
@@ -593,6 +1065,9 @@ def generate_variant_heatmap(
     min_snv_freq: float,
     min_indel_freq: float,
     gene_lengths: Dict[str, int] | None = None,
+    pokay_hits: Optional[pd.DataFrame] = None,
+    pokay_table_path: Optional[str] = None,
+    cli_command: Optional[str] = None,
 ):
     """Generate a heatmap of variant allele frequencies across passages."""
 
@@ -638,6 +1113,19 @@ def generate_variant_heatmap(
         fig.tight_layout()
         fig.savefig(heatmap_path, dpi=300, bbox_inches="tight")
         plt.close(fig)
+
+        try:
+            _write_interactive_heatmap_html(
+                heatmap_data,
+                sample_names,
+                outdir,
+                project_name,
+                pokay_hits,
+                pokay_table_path,
+                cli_command,
+            )
+        except Exception as html_exc:  # pragma: no cover - best-effort UX
+            print(f"Warning: failed to generate interactive heatmap: {html_exc}")
 
     except Exception as exc:
         raise RuntimeError(f"Error generating variant heatmap: {exc}") from exc
