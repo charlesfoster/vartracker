@@ -269,7 +269,9 @@ The pipeline performs the following analysis:
 
 When using vartracker, please cite:
 
-- The vartracker tool: `https://github.com/charlesfoster/vartracker`
+- The `vartracker` tool:
+  - Foster, C. (2025). vartracker: Track the persistence (or not) of mutations during longitudinal sequencing (Version 2.0). GitHub. https://github.com/charlesfoster/vartracker
+  - Foster CSP, et al. Long-term serial passaging of SARS-CoV-2 reveals signatures of convergent evolution. Journal of Virology. 2025;99: e00363-25. doi:10.1128/jvi.00363-25
 - bcftools: Li H. (2011) A statistical framework for SNP calling, mutation discovery, association mapping and population genetical parameter estimation from sequencing data. Bioinformatics, 27, 2987-2993.
 
 ## License

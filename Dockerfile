@@ -20,7 +20,7 @@ RUN micromamba install --yes --name base \
         lofreq \
     && micromamba clean --all --yes
 
-COPY . /app
+COPY --chown=mambauser:mambauser . /app
 
 RUN pip install --no-cache-dir .
 
