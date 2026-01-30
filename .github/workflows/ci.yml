@@ -48,7 +48,7 @@ jobs:
       matrix:
         python-version: ['3.11', '3.12']
     env:
-      MAMBA_ROOT_PREFIX: /root/micromamba-${{ matrix.python-version }}
+      MAMBA_ROOT_PREFIX: ${{ runner.temp }}/micromamba-${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
 
