@@ -7,6 +7,7 @@ Contains the main function and argument parsing for the vartracker command-line 
 import argparse
 import copy
 import csv
+import json
 import io
 import os
 import shutil
@@ -41,6 +42,17 @@ from .analysis import (
     search_pokay,
 )
 from ._version import __version__
+from .provenance import (
+    RunManifest,
+    collect_input_files,
+    collect_tool_versions,
+    compute_sha256,
+)
+from .schemas import (
+    get_results_schema,
+    render_output_schema_text,
+    write_results_metadata,
+)
 from .data import parse_pokay as parse_pokay_module
 from .annotation_processing import (
     gene_lengths_from_gff3,
@@ -60,6 +72,89 @@ def _print_dependency_error(error: DependencyError) -> None:
     if tip:
         print(f"{_YELLOW}[Tip]:{_RESET} {tip}")
     print()
+
+
+def _start_manifest(args) -> RunManifest | None:
+    outdir = getattr(args, "outdir", None)
+    if not outdir:
+        return None
+
+    manifest = getattr(args, "_manifest", None)
+    if manifest is not None:
+        return manifest
+
+    manifest = RunManifest(
+        outdir=outdir,
+        command=getattr(args, "command", None),
+        cli_args=getattr(args, "_argv", None),
+        invocation=getattr(args, "_invocation", None),
+        manifest_level=getattr(args, "manifest_level", "light"),
+    )
+    manifest.start()
+    setattr(args, "_manifest", manifest)
+    return manifest
+
+
+def _update_manifest_inputs(
+    manifest: RunManifest,
+    *,
+    input_csv: str | None,
+    reference: str | None,
+    gff3: str | None,
+    input_rows=None,
+    input_key: str = "input_csv",
+    input_files_key: str = "input_files",
+    manifest_level: str = "light",
+) -> None:
+    inputs: dict[str, object] = {}
+
+    if input_csv:
+        csv_path = Path(input_csv).expanduser().resolve()
+        csv_entry: dict[str, object] = {"path": str(csv_path)}
+        csv_hash, csv_error = compute_sha256(csv_path)
+        csv_entry["sha256"] = csv_hash
+        if csv_error:
+            csv_entry["sha256_error"] = csv_error
+        try:
+            csv_entry["size_bytes"] = csv_path.stat().st_size
+        except OSError as exc:
+            csv_entry["size_bytes_error"] = str(exc)
+        inputs[input_key] = csv_entry
+
+        if input_rows is not None and manifest_level == "deep":
+            input_files = collect_input_files(
+                input_rows, csv_path=csv_path, include_hashes=True
+            )
+            inputs[input_files_key] = input_files
+            inputs[f"{input_files_key}_count"] = len(input_files)
+            inputs[f"{input_files_key}_total_bytes"] = sum(
+                entry.get("size_bytes", 0)
+                for entry in input_files
+                if isinstance(entry.get("size_bytes"), int)
+            )
+
+    def _add_ref(label: str, value: str | None) -> None:
+        if not value:
+            return
+        path = Path(value).expanduser().resolve()
+        entry: dict[str, object] = {"path": str(path)}
+        digest, error = compute_sha256(path)
+        entry["sha256"] = digest
+        if error:
+            entry["sha256_error"] = error
+        inputs[label] = entry
+
+    _add_ref("reference_fasta", reference)
+    _add_ref("annotation_gff3", gff3)
+
+    if inputs:
+        manifest.update(inputs=inputs)
+
+
+def _ensure_tool_versions(manifest: RunManifest) -> None:
+    if "external_tools" in manifest.payload:
+        return
+    manifest.update(external_tools=collect_tool_versions())
 
 
 def _copy_test_dataset(target_dir: Path) -> None:
@@ -216,6 +311,12 @@ def _configure_vcf_parser(
         required=False,
         default=".",
         help="Output directory for vartracker results (default: current directory)",
+    )
+    vt_group.add_argument(
+        "--manifest-level",
+        choices=["light", "deep"],
+        default="light",
+        help="Manifest detail level for run metadata (default: light)",
     )
     vt_group.add_argument(
         "-f",
@@ -419,6 +520,31 @@ def _add_generate_subparser(subparsers):
     gen_parser.set_defaults(handler=_run_generate_command)
 
 
+def _add_schema_subparser(subparsers):
+    description = "Describe the output schema for vartracker results."
+    schema_parser = subparsers.add_parser(
+        "describe-output",
+        help="Print the output schema for results tables",
+        description=description,
+        aliases=["schema"],
+        formatter_class=FlexiFormatter,
+    )
+
+    schema_parser.add_argument(
+        "--out",
+        help="Optional path to write the schema (CSV or JSON)",
+        default=None,
+    )
+    schema_parser.add_argument(
+        "--format",
+        choices=["csv", "json"],
+        default="csv",
+        help="Output format when using --out (default: csv)",
+    )
+
+    schema_parser.set_defaults(handler=_run_describe_output_command)
+
+
 def create_parser():
     """Create and return the top-level argument parser with subcommands."""
 
@@ -435,6 +561,7 @@ def create_parser():
     _add_bam_subparser(subparsers)
     _add_e2e_subparser(subparsers)
     _add_generate_subparser(subparsers)
+    _add_schema_subparser(subparsers)
 
     return parser
 
@@ -483,6 +610,7 @@ def main(sysargs=None):
     if sysargs:
         invocation = f"vartracker {' '.join(sysargs)}"
     setattr(args, "_invocation", invocation)
+    setattr(args, "_argv", list(sysargs))
 
     handler = getattr(args, "handler", None)
     if handler is None:
@@ -496,6 +624,8 @@ def _run_vcf_command(args):
     annotation_supplied = getattr(args, "gff3", None) is not None
 
     with ExitStack() as stack:
+        manifest = None
+        input_key = "input_csv"
         input_csv_path = args.input_csv
 
         if args.test:
@@ -514,11 +644,31 @@ def _run_vcf_command(args):
             print(get_logo())
 
         try:
-            # Validate dependencies
-            validate_dependencies()
-
             # Set up default paths
             args = setup_default_paths(args)
+
+            # Create output directory and manifest as early as possible
+            os.makedirs(args.outdir, exist_ok=True)
+            manifest = _start_manifest(args)
+            if manifest is not None:
+                _ensure_tool_versions(manifest)
+                existing_input = (
+                    manifest.payload.get("inputs", {}).get("input_csv", {}).get("path")
+                )
+                resolved_input = str(Path(args.input_csv).expanduser().resolve())
+                if existing_input and existing_input != resolved_input:
+                    input_key = "analysis_csv"
+                _update_manifest_inputs(
+                    manifest,
+                    input_csv=args.input_csv,
+                    reference=args.reference,
+                    gff3=args.gff3,
+                    input_key=input_key,
+                    manifest_level=args.manifest_level,
+                )
+
+            # Validate dependencies
+            validate_dependencies()
 
             try:
                 validate_reference_and_annotation(args.reference, args.gff3)
@@ -542,6 +692,23 @@ def _run_vcf_command(args):
             except Exception as e:
                 raise InputValidationError(
                     f"Could not read input file: {args.input_csv}. {str(e)}"
+                )
+
+            if manifest is not None and args.manifest_level == "deep":
+                input_files_key = (
+                    "analysis_input_files"
+                    if input_key == "analysis_csv"
+                    else "input_files"
+                )
+                _update_manifest_inputs(
+                    manifest,
+                    input_csv=args.input_csv,
+                    reference=args.reference,
+                    gff3=args.gff3,
+                    input_rows=input_file.to_dict(orient="records"),
+                    input_key=input_key,
+                    input_files_key=input_files_key,
+                    manifest_level=args.manifest_level,
                 )
 
             # Resolve potential relative paths for VCF and coverage files
@@ -597,9 +764,6 @@ def _run_vcf_command(args):
                     "\033[93mWarning:\033[0m vartracker was designed for longitudinal comparisons but only one input VCF was provided. Some results may not make sense."
                 )
 
-            # Create output directory
-            os.makedirs(args.outdir, exist_ok=True)
-
             # Create temporary directory
             if args.keep_temp:
                 # Create a persistent temporary directory for debugging
@@ -641,13 +805,58 @@ def _run_vcf_command(args):
                         gene_lengths_override,
                     )
 
+            results_metadata_path = write_results_metadata(
+                args.outdir, results_filename=args.filename
+            )
+
+            outputs = {
+                "results_csv": os.path.join(args.outdir, args.filename),
+                "results_metadata": str(results_metadata_path),
+                "new_mutations_csv": os.path.join(args.outdir, "new_mutations.csv"),
+                "persistent_new_mutations_csv": os.path.join(
+                    args.outdir, "persistent_new_mutations.csv"
+                ),
+                "cumulative_mutations_plot": os.path.join(
+                    args.outdir, "cumulative_mutations.pdf"
+                ),
+                "mutations_per_gene_plot": os.path.join(
+                    args.outdir, "mutations_per_gene.pdf"
+                ),
+                "variant_allele_frequency_heatmap_html": os.path.join(
+                    args.outdir, "variant_allele_frequency_heatmap.html"
+                ),
+                "variant_allele_frequency_heatmap_pdf": os.path.join(
+                    args.outdir, "variant_allele_frequency_heatmap.pdf"
+                ),
+            }
+
+            if args.search_pokay:
+                pokay_name = args.name if args.name else "sample"
+                pokay_full = os.path.join(
+                    args.outdir, f"{pokay_name}.pokay_database_hits.full.csv"
+                )
+                pokay_concise = os.path.join(
+                    args.outdir, f"{pokay_name}.pokay_database_hits.concise.csv"
+                )
+                if os.path.exists(pokay_full):
+                    outputs["pokay_hits_full_csv"] = pokay_full
+                if os.path.exists(pokay_concise):
+                    outputs["pokay_hits_concise_csv"] = pokay_concise
+
+            if manifest is not None:
+                manifest.finish(status="success", outputs=outputs)
+
             print(f"\nFinished: find results in {args.outdir}\n")
             return 0
         except DependencyError as e:
             _print_dependency_error(e)
+            if manifest is not None:
+                manifest.finish(status="failed", error=str(e))
             return 1
         except (InputValidationError, ProcessingError) as e:
             print(f"\nERROR: {str(e)}\n")
+            if manifest is not None:
+                manifest.finish(status="failed", error=str(e))
             return 1
         except Exception as e:
             print(f"\nUnexpected error: {str(e)}\n")
@@ -655,6 +864,8 @@ def _run_vcf_command(args):
                 import traceback
 
                 traceback.print_exc()
+            if manifest is not None:
+                manifest.finish(status="failed", error=str(e))
             return 1
 
 
@@ -716,13 +927,8 @@ def _add_e2e_subparser(subparsers):
 
 def _run_e2e_command(args):
     test_context = None
+    manifest = None
     try:
-        try:
-            validate_dependencies("e2e")
-        except DependencyError as error:
-            _print_dependency_error(error)
-            return 1
-
         args = setup_default_paths(args)
 
         if getattr(args, "test", False):
@@ -739,6 +945,27 @@ def _run_e2e_command(args):
             )
             return 1
 
+        os.makedirs(args.outdir, exist_ok=True)
+        manifest = _start_manifest(args)
+        if manifest is not None:
+            _ensure_tool_versions(manifest)
+            _update_manifest_inputs(
+                manifest,
+                input_csv=args.samples_csv,
+                reference=args.reference,
+                gff3=args.gff3,
+                input_key="input_csv",
+                manifest_level=args.manifest_level,
+            )
+
+        try:
+            validate_dependencies("e2e")
+        except DependencyError as error:
+            _print_dependency_error(error)
+            if manifest is not None:
+                manifest.finish(status="failed", error=str(error))
+            return 1
+
         snakemake_outdir = args.snakemake_outdir or args.outdir
 
         try:
@@ -746,6 +973,17 @@ def _run_e2e_command(args):
         except Exception as exc:
             raise InputValidationError(
                 f"Could not read input file: {args.samples_csv}. {exc}"
+            )
+
+        if manifest is not None and args.manifest_level == "deep":
+            _update_manifest_inputs(
+                manifest,
+                input_csv=args.samples_csv,
+                reference=args.reference,
+                gff3=args.gff3,
+                input_rows=snakemake_input.to_dict(orient="records"),
+                input_key="input_csv",
+                manifest_level=args.manifest_level,
             )
 
         validate_input_file(
@@ -768,6 +1006,11 @@ def _run_e2e_command(args):
         )
 
         if args.snakemake_dryrun:
+            if manifest is not None:
+                manifest.finish(
+                    status="success",
+                    outputs={"snakemake_outdir": snakemake_outdir},
+                )
             return 0
 
         if not updated_csv or not os.path.exists(updated_csv):
@@ -775,13 +1018,33 @@ def _run_e2e_command(args):
                 "End-to-end workflow did not produce the expected updated sample sheet"
             )
 
+        if manifest is not None:
+            manifest.update(
+                outputs={"snakemake_outdir": snakemake_outdir},
+            )
+
         vcf_args = copy.deepcopy(args)
         vcf_args.input_csv = updated_csv
         vcf_args.command = "vcf"
         setattr(vcf_args, "_suppress_logo", True)
         vcf_args.test = False
+        setattr(vcf_args, "_manifest", manifest)
 
         return _run_vcf_command(vcf_args)
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        if manifest is not None:
+            manifest.finish(status="failed", error=str(exc))
+        return 1
+    except Exception as exc:
+        print(f"\nUnexpected error: {exc}\n")
+        if getattr(args, "debug", False):
+            import traceback
+
+            traceback.print_exc()
+        if manifest is not None:
+            manifest.finish(status="failed", error=str(exc))
+        return 1
     finally:
         if test_context is not None:
             test_context.cleanup()
@@ -789,13 +1052,8 @@ def _run_e2e_command(args):
 
 def _run_bam_command(args):
     test_context = None
+    manifest = None
     try:
-        try:
-            validate_dependencies("bam")
-        except DependencyError as error:
-            _print_dependency_error(error)
-            return 1
-
         args = setup_default_paths(args)
 
         if getattr(args, "test", False):
@@ -812,11 +1070,43 @@ def _run_bam_command(args):
             )
             return 1
 
+        os.makedirs(args.outdir, exist_ok=True)
+        manifest = _start_manifest(args)
+        if manifest is not None:
+            _ensure_tool_versions(manifest)
+            _update_manifest_inputs(
+                manifest,
+                input_csv=args.input_csv,
+                reference=args.reference,
+                gff3=args.gff3,
+                input_key="input_csv",
+                manifest_level=args.manifest_level,
+            )
+
+        try:
+            validate_dependencies("bam")
+        except DependencyError as error:
+            _print_dependency_error(error)
+            if manifest is not None:
+                manifest.finish(status="failed", error=str(error))
+            return 1
+
         try:
             bam_input = pd.read_csv(args.input_csv)
         except Exception as exc:
             raise InputValidationError(
                 f"Could not read input file: {args.input_csv}. {exc}"
+            )
+
+        if manifest is not None and args.manifest_level == "deep":
+            _update_manifest_inputs(
+                manifest,
+                input_csv=args.input_csv,
+                reference=args.reference,
+                gff3=args.gff3,
+                input_rows=bam_input.to_dict(orient="records"),
+                input_key="input_csv",
+                manifest_level=args.manifest_level,
             )
 
         validate_input_file(
@@ -841,6 +1131,11 @@ def _run_bam_command(args):
         )
 
         if args.snakemake_dryrun:
+            if manifest is not None:
+                manifest.finish(
+                    status="success",
+                    outputs={"snakemake_outdir": snakemake_outdir},
+                )
             return 0
 
         if not updated_csv or not os.path.exists(updated_csv):
@@ -848,13 +1143,33 @@ def _run_bam_command(args):
                 "BAM workflow did not produce the expected updated sample sheet"
             )
 
+        if manifest is not None:
+            manifest.update(
+                outputs={"snakemake_outdir": snakemake_outdir},
+            )
+
         vcf_args = copy.deepcopy(args)
         vcf_args.input_csv = updated_csv
         vcf_args.command = "vcf"
         setattr(vcf_args, "_suppress_logo", True)
         vcf_args.test = False
+        setattr(vcf_args, "_manifest", manifest)
 
         return _run_vcf_command(vcf_args)
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        if manifest is not None:
+            manifest.finish(status="failed", error=str(exc))
+        return 1
+    except Exception as exc:
+        print(f"\nUnexpected error: {exc}\n")
+        if getattr(args, "debug", False):
+            import traceback
+
+            traceback.print_exc()
+        if manifest is not None:
+            manifest.finish(status="failed", error=str(exc))
+        return 1
     finally:
         if test_context is not None:
             test_context.cleanup()
@@ -905,6 +1220,30 @@ def _run_generate_command(args):
         for entry in warnings:
             print(f" - {entry}")
 
+    return 0
+
+
+def _run_describe_output_command(args):
+    if args.out:
+        output_path = Path(args.out).expanduser().resolve()
+        schema = list(get_results_schema())
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if args.format == "json":
+            output_path.write_text(
+                json.dumps(schema, indent=2, sort_keys=True), encoding="utf-8"
+            )
+        else:
+            with output_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["name", "type", "description", "units", "values"],
+                )
+                writer.writeheader()
+                writer.writerows(schema)
+        print(f"Wrote schema to {output_path}")
+        return 0
+
+    print(render_output_schema_text())
     return 0
 
 

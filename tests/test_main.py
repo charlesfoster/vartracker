@@ -136,6 +136,8 @@ def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
             str(csv_path),
             "--name",
             "Example",
+            "--outdir",
+            str(tmp_path / "results"),
         ]
     )
 
@@ -248,6 +250,8 @@ def test_e2e_dryrun_skips_vcf(monkeypatch, tmp_path_factory):
             "ref.fasta",
             "--snakemake-dryrun",
             "--redo",
+            "--outdir",
+            str(tmp_path_factory.mktemp("e2e_out")),
         ]
     )
 
@@ -307,6 +311,8 @@ def test_e2e_verbose_enables_snakemake_commands(monkeypatch, tmp_path):
             "--reference",
             "ref.fasta",
             "--verbose",
+            "--outdir",
+            str(tmp_path / "results"),
         ]
     )
 
@@ -367,6 +373,8 @@ def test_bam_runs_snakemake_then_vcf(monkeypatch, tmp_path):
             str(samples_csv),
             "--reference",
             "ref.fasta",
+            "--outdir",
+            str(tmp_path / "results"),
         ]
     )
 
@@ -415,6 +423,8 @@ def test_bam_dryrun_skips_vcf(monkeypatch, tmp_path):
             "--reference",
             "ref.fasta",
             "--snakemake-dryrun",
+            "--outdir",
+            str(tmp_path / "results"),
         ]
     )
 

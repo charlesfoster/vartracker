@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-
 READ_PATTERN = re.compile(
     r"^(?P<stem>.*?)(?:[_-]R(?P<read>[12]))?\.(?:f(?:ast)?q)(?:\.gz)?$",
     re.IGNORECASE,

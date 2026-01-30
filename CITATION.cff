@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "vartracker"
+version: "2.0.0"
+date-released: "2026-01-30"
+license: MIT
+repository-code: "https://github.com/charlesfoster/vartracker"
+url: "https://github.com/charlesfoster/vartracker"
+doi: "10.5281/zenodo.XXXXXXX"
+keywords:
+  - bioinformatics
+  - genomics
+  - mutation tracking
+  - longitudinal analysis
+  - SARS-CoV-2
+authors:
+  - family-names: Foster
+    given-names: Charles
+preferred-citation:
+  type: software
+  authors:
+    - family-names: Foster
+      given-names: Charles
+  title: "vartracker"
+  version: "2.0.0"
+  doi: "10.5281/zenodo.XXXXXXX"
+  url: "https://github.com/charlesfoster/vartracker"
+  date-released: "2026-01-30"

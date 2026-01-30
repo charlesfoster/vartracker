@@ -1,0 +1,17 @@
+{
+  "title": "vartracker",
+  "description": "Track the persistence (or loss) of mutations during longitudinal sequencing. vartracker summarises VCFs and generates reports for longitudinal passaging experiments.",
+  "license": "MIT",
+  "creators": [
+    {
+      "name": "Foster, Charles"
+    }
+  ],
+  "keywords": [
+    "bioinformatics",
+    "genomics",
+    "mutation tracking",
+    "longitudinal analysis",
+    "SARS-CoV-2"
+  ]
+}
