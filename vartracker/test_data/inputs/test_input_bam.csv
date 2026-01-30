@@ -1,0 +1,7 @@
+sample_name,sample_number,reads1,reads2,bam,vcf,coverage
+test_psg_0_aligned.indelqual,0,,,../bams/test_psg_0_aligned.indelqual.bam,,
+test_psg_1_aligned.indelqual,1,,,../bams/test_psg_1_aligned.indelqual.bam,,
+test_psg_2_aligned.indelqual,2,,,../bams/test_psg_2_aligned.indelqual.bam,,
+test_psg_3_aligned.indelqual,3,,,../bams/test_psg_3_aligned.indelqual.bam,,
+test_psg_4_aligned.indelqual,4,,,../bams/test_psg_4_aligned.indelqual.bam,,
+test_psg_5_aligned.indelqual,5,,,../bams/test_psg_5_aligned.indelqual.bam,,

@@ -16,6 +16,18 @@ A bioinformatics pipeline to summarise variants called against a reference in a 
 
 **Author:** Dr Charles Foster
 
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Output](#output)
+- [What does vartracker do?](#what-does-vartracker-do)
+- [Citation](#citation)
+- [License](#license)
+- [Contributing](#contributing)
+- [Support](#support)
+
 ## Features
 
 - Track mutation persistence across longitudinal samples
@@ -28,7 +40,36 @@ A bioinformatics pipeline to summarise variants called against a reference in a 
 
 ## Installation
 
-### From PyPI (Recommended)
+Requires Python 3.11 or newer.
+
+### Recommended installation (mamba)
+
+Create the fully pinned, reproducible environment (uses strict channel priority as configured
+in `environment.yml`), then install vartracker from PyPI:
+
+```bash
+mamba create -n vartracker -f environment.yml
+mamba activate vartracker
+pip install vartracker
+```
+
+If you prefer conda:
+
+```bash
+conda env create -n vartracker -f environment.yml
+conda activate vartracker
+pip install vartracker
+```
+
+On Apple Silicon (macOS ARM), the environment may not solve with native packages. Use the x86_64
+subdir or Docker instead:
+
+```bash
+CONDA_SUBDIR=osx-64 mamba create -n vartracker -f environment.yml
+mamba activate vartracker
+```
+
+### From PyPI (Python-only)
 
 ```bash
 pip install vartracker
@@ -36,52 +77,87 @@ pip install vartracker
 
 ### External Dependencies
 
-vartracker requires the following external tools to be installed and available in your PATH:
+vartracker shells out to a handful of bioinformatics tools. Make sure they are discoverable on `PATH` before running the CLI.
+Minimum tested versions are tracked in `docs/DEPENDENCIES.md`.
 
-- **bcftools** (>=1.10): For VCF file processing and variant calling consequences
-- **tabix**: For indexing compressed files
+- **bcftools** and **tabix** – required for all modes
+- **samtools**, **lofreq**, **fastp**, **bwa**, and **snakemake** – required for the `bam` and `end-to-end` Snakemake workflows
+
+If you only plan to run `vartracker vcf` against pre-generated VCFs, the first pair is sufficient. The additional tools are needed whenever you ask vartracker to align reads or call variants for you.
+
+Note: the pinned micromamba environment installs `tabix`/`bgzip` via `htslib`.
 
 #### Installing bcftools and tabix
 
 **On macOS:**
 ```bash
 # Using Homebrew
-brew install bcftools htslib
+brew install bcftools htslib samtools fastp bwa
+# lofreq is available via bioconda (requires conda/mamba)
+conda install -c bioconda lofreq
 
 # Using MacPorts
-sudo port install bcftools htslib
+sudo port install bcftools htslib samtools fastp bwa
 ```
 
 **On Linux (Ubuntu/Debian):**
 ```bash
 sudo apt-get update
-sudo apt-get install bcftools tabix
+sudo apt-get install bcftools tabix samtools fastp bwa
+# lofreq is easiest to install via bioconda on Debian-based systems:
+conda install -c bioconda lofreq
 ```
 
 **On Linux (CentOS/RHEL/Fedora):**
 ```bash
 # CentOS/RHEL with EPEL
 sudo yum install epel-release
-sudo yum install bcftools htslib
+sudo yum install bcftools htslib samtools fastp bwa
 
 # Fedora
-sudo dnf install bcftools htslib
+sudo dnf install bcftools htslib samtools fastp bwa
+# Install lofreq via bioconda on RPM-based systems:
+conda install -c bioconda lofreq
 ```
 
 **Using conda:**
 ```bash
-conda install -c bioconda bcftools htslib
+conda install -c bioconda bcftools samtools tabix fastp bwa lofreq
 ```
 
 ### Development Installation
 
-For development or to get the latest version:
+For development or to get the latest version (requires Python 3.11+):
 
 ```bash
 git clone https://github.com/charlesfoster/vartracker.git
 cd vartracker
 pip install -e .[dev]
 pre-commit install
+```
+
+### Docker
+
+Build a container image that bundles Python, vartracker, and all external bioinformatics tools:
+
+```bash
+docker build -t vartracker:latest .
+```
+
+Docker is a self-contained reproducible option. If you publish the image, record the digest and
+set it when running to include it in the run manifest:
+
+```bash
+export VARTRACKER_CONTAINER_IMAGE=ghcr.io/your-org/vartracker:2.0.0
+export VARTRACKER_CONTAINER_DIGEST=sha256:...
+```
+
+Run workflows by mounting your data directory into the container. The command below analyses an input CSV located in the current directory and writes results beside it:
+
+```bash
+docker run --rm -v "$(pwd)":/workspace vartracker \
+  vcf /workspace/inputs/vcf_inputs.csv \
+  --outdir /workspace/results
 ```
 
 ## Quick Start
@@ -92,57 +168,68 @@ After installation, `vartracker` will be available as a command-line tool:
 vartracker --help
 ```
 
-### Basic Usage
+### Typical commands
 
 ```bash
-vartracker input_data.csv -o output_directory
+# Analyse pre-called VCFs plus coverage files
+vartracker vcf path/to/vcf_inputs.csv --outdir results/vcf_run
+
+# Run BAMs through the Snakemake workflow, then summarise variants
+vartracker bam path/to/bam_inputs.csv \
+  --snakemake-outdir work/bam_pipeline \
+  --outdir results/bam_summary
+
+# Start from raw reads (FASTQ) and run the full pipeline
+vartracker end-to-end path/to/read_inputs.csv \
+  --cores 12 \
+  --outdir results/e2e_summary
+
+# Generate a template spreadsheet for a directory of files
+vartracker generate --mode e2e --dir data/passaging --out inputs.csv
+
+# Exercise the bundled smoke-test dataset
+vartracker vcf --test
+vartracker bam --test
+vartracker end-to-end --test
 ```
 
-### Input Format
+All modes understand `--test`, which copies the example dataset from `vartracker/test_data`
+into a temporary directory, resolves relative paths, and runs the appropriate workflow.
 
-The input CSV file should have four columns:
+### Input Spreadsheets
 
-1. **vcf**: Full paths to VCF files (bgzipped or uncompressed) containing variants for each sample called against the NC_045512.2 reference genome. The VCF must have depth ("DP") and variant allele frequency tags in the INFO field. The variant allele frequency tag name can be specified via the `vartracker` CLI (see below).
-2. **coverage**: Full paths to coverage files. These files are expected to be in TSV format
-with three columns (no header): `reference\t1-based position\tdepth`. For example:
+Every CLI mode reads the same canonical columns:
 
-```
-NC_045512.2	1	0
-NC_045512.2	2	0
-NC_045512.2	3	0
-NC_045512.2	4	0
-NC_045512.2	5	0
-NC_045512.2	6	0
-NC_045512.2	7	0
-NC_045512.2	8	0
-NC_045512.2	9	0
-NC_045512.2	10	0
-...
-NC_045512.2	250	932
-NC_045512.2	251	929
-NC_045512.2	252	931
-NC_045512.2	253	900
-NC_045512.2	254	900
-NC_045512.2	255	897
-NC_045512.2	256	891
-NC_045512.2	257	895
-NC_045512.2	258	903
-NC_045512.2	259	898
-NC_045512.2	260	895
-```
+- `sample_name` (required) – display name for the sample
+- `sample_number` (required) – passage/order index used in longitudinal plots
+- `reads1`, `reads2` – FASTQ paths (required for `end-to-end`, optional elsewhere). The pipeline runs in single-end mode (leave the `reads2` column empty) but the results are less well tested.
+- `bam` – BAM file aligned against the SARS-CoV-2 reference
+- `vcf` – bgzipped VCF containing variant calls with depth (`DP`) and allele-frequency tags
+- `coverage` – per-base coverage TSV with columns `reference<TAB>position<TAB>depth`
 
-Note: this is the format produced by `bedtools genomecov` via the command `bedtools genomecov -ibam input.bam -d > coverage.txt` or `samtools depth` via the command `samtools depth -a input.bam`.
+Mode-specific expectations:
 
-3. **sample_name**: Name of the sample in the VCF file
-4. **sample_number**: Sample number (e.g., 0, 1, 2, ..., 15 for passages)
+- **VCF mode** requires `vcf` and `coverage`, while leaving `reads*`/`bam` empty.
+- **BAM mode** requires `bam` and will fill `vcf` + `coverage` during the workflow.
+- **End-to-end mode** requires `reads1` (and optionally `reads2`); remaining fields are generated.
 
-**Example input CSV:**
-```csv
-vcf,coverage,sample_name,sample_number
-/path/to/sample0.vcf.gz,/path/to/sample0.coverage,passage_0,0
-/path/to/sample1.vcf.gz,/path/to/sample1.coverage,passage_1,1
-/path/to/sample2.vcf.gz,/path/to/sample2.coverage,passage_2,2
-```
+Relative paths are resolved with respect to the CSV location, so you can store the sheet alongside
+your sequencing artefacts. The `generate` subcommand can scaffold a CSV and highlight missing files.
+
+Coverage files can be produced with `samtools depth -aa sample.bam > sample_depth.txt` or
+`bedtools genomecov -ibam sample.bam -d`. The file name suffix does not matter; vartracker checks
+for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test dataset.
+
+### Mode-specific options
+
+- `vartracker vcf` – accepts plotting and filtering options such as `--min-snv-freq`, `--min-indel-freq`,
+  `--allele-frequency-tag`, `--name`, `--outdir`, `--passage-cap`, `--manifest-level`, and pokay controls
+  (`--search-pokay`, `--pokay-csv`, `--download-pokay`). Use `--test` to run the bundled smoke test.
+- `vartracker bam` – everything from `vcf`, plus Snakemake options:
+  `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`.
+- `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
+- `vartracker generate` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
+  and `--dry-run` to preview without writing a file.
 
 ### Using with pokay Database
 
@@ -165,68 +252,72 @@ vartracker input_data.csv --search-pokay --pokay-csv pokay_database.csv -o resul
    Alternatively, omit `--pokay-csv` and pass `--download-pokay` to fetch the
    database automatically during execution.
 
-### Command Line Options
+### Command Line Reference
 
 ```
-usage: vartracker [options] <input_csv>
-
-vartracker: track the persistence (or not) of mutations during long-term passaging
+usage: main.py [-h] [-V] {vcf,bam,end-to-end,e2e,generate,describe-output} ...
 
 positional arguments:
-  input_csv             Input CSV file. See below.
+  {vcf,bam,end-to-end,e2e,generate}
+    vcf                 Analyse VCF inputs
+    bam                 Run the BAM preprocessing workflow
+    end-to-end (e2e)    Run the end-to-end workflow (Snakemake + vartracker)
+    generate            Generate input spreadsheets from an existing directory of files
+    describe-output     Print the output schema for results tables
 
 options:
   -h, --help            show this help message and exit
-  -a, --annotation ANNOTATION
-                        Annotations to use in GFF3 format (default: uses packaged SARS-CoV-2 annotations)
-  -m, --min-snv-freq MIN_SNV_FREQ
-                        Minimum allele frequency of SNV variants to keep (default: 0.03)
-  -M, --min-indel-freq MIN_INDEL_FREQ
-                        Minimum allele frequency of indel variants to keep (default: 0.1)
-  -n, --name NAME       Optional: add a column to results with the name specified here
-  -o, --outdir OUTDIR   Output directory (default: current directory)
-  --pokay-csv POKAY_CSV
-                        Path to a pre-parsed pokay database CSV file
-  --search-pokay        Run literature lookups against the pokay database
-  --download-pokay      Automatically download and parse the pokay database
-  --test                Run vartracker against the bundled demonstration dataset
-  -f, --filename FILENAME
-                        Output file name (default: results.csv)
-  -r, --reference REFERENCE
-                        Reference genome (default: uses packaged SARS-CoV-2 reference)
-  --passage-cap PASSAGE_CAP
-                        Cap the number of passages at this number
-  --debug               Print commands being run for debugging
-  --keep-temp           Keep temporary files for debugging
-  --allele-frequency-tag ALLELE_FREQUENCY_TAG
-                        INFO tag name for allele frequency (default: AF)
   -V, --version         show program's version number and exit
 ```
 
+Use `vartracker <subcommand> --help` to inspect the full list of mode-specific arguments.
+
 ### Installation Test
 
-After installation you can verify the full pipeline using the bundled
+After installation you can verify the workflows using the bundled
 demonstration dataset:
 
 ```bash
-vartracker --test --outdir vartracker_test_results
+vartracker vcf --test --outdir vartracker_vcf_test_results
+vartracker bam --test --outdir vartracker_bam_test_results
+vartracker end-to-end --test --outdir vartracker_e2e_test_results
 ```
 
-This command runs vartracker end-to-end with packaged inputs, producing outputs
-in the specified directory and confirming that external dependencies (such as
-bcftools) are available.
+Each command copies the example dataset, resolves relative paths, checks for
+the required external tools, and writes a self-contained set of results.
 
 ## Output
 
 vartracker produces several output files:
 
 - **results.csv**: Comprehensive variant analysis with all metrics
+- **results_metadata.json**: Output schema version and results metadata
 - **new_mutations.csv**: Mutations not present in the first sample
 - **persistent_new_mutations.csv**: New mutations that persist to the final sample
 - **cumulative_mutations.pdf**: Plot showing mutation accumulation over time
 - **mutations_per_gene.pdf**: Gene-wise mutation statistics
+- **variant_allele_frequency_heatmap.html**: Interactive heatmap with optional pokay annotations
 - **variant_allele_frequency_heatmap.pdf**: Heatmap of variant allele frequencies across passages
 - **pokay_database_hits.*.csv**: Functional annotation results (if pokay used)
+- **run_metadata.json**: Provenance manifest capturing inputs, tool versions, and run status
+
+By default the manifest is lightweight. Use `--manifest-level deep` to checksum all referenced
+input files (FASTQ/BAM/VCF/coverage) and include file sizes.
+
+### Output schema
+
+The results table schema is documented in `docs/OUTPUT_SCHEMA.md`. You can also print it from the CLI:
+
+```bash
+vartracker describe-output
+```
+
+To write the schema to a file instead, use:
+
+```bash
+vartracker describe-output --out docs/output_schema.csv
+vartracker describe-output --out docs/output_schema.json --format json
+```
 
 ## What does vartracker do?
 
@@ -248,10 +339,22 @@ The pipeline performs the following analysis:
 
 ## Citation
 
-When using vartracker, please cite:
+When using vartracker, please cite the software release you used. Citation metadata is provided
+in `CITATION.cff`, and GitHub releases are archived on Zenodo (DOI will appear here once minted).
 
-- The vartracker tool: `https://github.com/charlesfoster/vartracker`
-- bcftools: Li H. (2011) A statistical framework for SNP calling, mutation discovery, association mapping and population genetical parameter estimation from sequencing data. Bioinformatics, 27, 2987-2993.
+Suggested software citation (replace the DOI/version with your release):
+
+- Foster, C. (2026). vartracker (Version 2.0.0). Zenodo. DOI: 10.5281/zenodo.XXXXXXX
+
+Also cite relevant methods or data sources, for example:
+
+- Foster CSP, et al. Long-term serial passaging of SARS-CoV-2 reveals signatures of convergent evolution. Journal of Virology. 2025;99: e00363-25. doi:10.1128/jvi.00363-25
+- Danecek P, Bonfield JK, Liddle J, Marshall J, Ohan V, Pollard MO, et al. Twelve years of SAMtools and BCFtools. GigaScience. 2021;10. doi:10.1093/gigascience/giab008
+- Danecek P, McCarthy SA. BCFtools/csq: haplotype-aware variant consequences. Bioinformatics. 2017;33: 2037–2039. doi:10.1093/bioinformatics/btx100
+- Wilm A, Aw PPK, Bertrand D, Yeo GHT, Ong SH, Wong CH, et al. LoFreq: a sequence-quality aware, ultra-sensitive variant caller for uncovering cell-population heterogeneity from high-throughput sequencing datasets. Nucleic Acids Res. 2012;40: 11189–11201. doi:10.1093/nar/gks918
+- Chen S, Zhou Y, Chen Y, Gu J. fastp: an ultra-fast all-in-one FASTQ preprocessor. Bioinformatics. 2018;34: i884–i890. doi:10.1093/bioinformatics/bty560
+- Li H. Aligning sequence reads, clone sequences and assembly contigs with BWA-MEM. arXiv. 2013 [cited 13 Apr 2021]. Available: https://arxiv.org/abs/1303.3997v2
+- Mölder F, Jablonski KP, Letcher B, Hall MB, Tomkins-Tinch CH, Sochat V, et al. Sustainable data analysis with Snakemake. F1000Res. 2021;10: 33. doi:10.12688/f1000research.29032.2
 
 ## License
 

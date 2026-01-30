@@ -1,0 +1,233 @@
+[
+  {
+    "description": "Reference contig name (e.g., NC_045512.2).",
+    "name": "chrom",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "1-based start position of the variant on the reference.",
+    "name": "start",
+    "type": "integer",
+    "units": "bp",
+    "values": ""
+  },
+  {
+    "description": "1-based end position (inclusive) of the variant.",
+    "name": "end",
+    "type": "integer",
+    "units": "bp",
+    "values": ""
+  },
+  {
+    "description": "Gene or genomic region assigned to the variant.",
+    "name": "gene",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "Reference allele.",
+    "name": "ref",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "Alternate allele.",
+    "name": "alt",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "Concise variant label (ref + position + alt, e.g. A23403G).",
+    "name": "variant",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "Amino acid consequence for the gene-level annotation.",
+    "name": "amino_acid_consequence",
+    "type": "string",
+    "units": "",
+    "values": "e.g. S:D614G"
+  },
+  {
+    "description": "NSP-level amino acid change for ORF1ab annotations.",
+    "name": "nsp_aa_change",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "bcftools csq nucleotide notation.",
+    "name": "bcsq_nt_notation",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "bcftools csq amino acid notation.",
+    "name": "bcsq_aa_notation",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "Variant type derived from the VCF entry.",
+    "name": "type_of_variant",
+    "type": "string",
+    "units": "",
+    "values": "snp, indel"
+  },
+  {
+    "description": "Functional change classification from bcftools csq.",
+    "name": "type_of_change",
+    "type": "string",
+    "units": "",
+    "values": "synonymous, missense, frameshift, ..."
+  },
+  {
+    "description": "Whether the variant is present in the first sample.",
+    "name": "variant_status",
+    "type": "string",
+    "units": "",
+    "values": "original, new"
+  },
+  {
+    "description": "Persistence class based on first and last sample presence.",
+    "name": "persistence_status",
+    "type": "string",
+    "units": "",
+    "values": "original_retained, original_lost, new_persistent, new_transient"
+  },
+  {
+    "description": "Per-sample presence (Y) or absence (N), ordered by input.",
+    "name": "presence_absence",
+    "type": "string (slash-separated)",
+    "units": "",
+    "values": "Y/N"
+  },
+  {
+    "description": "Sample name where the variant first appears.",
+    "name": "first_appearance",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "Sample name where the variant last appears.",
+    "name": "last_appearance",
+    "type": "string",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "Aggregated QC status across samples.",
+    "name": "overall_variant_qc",
+    "type": "string",
+    "units": "",
+    "values": "PASS, FAIL"
+  },
+  {
+    "description": "Per-sample QC flags (P/F) ordered by input.",
+    "name": "per_sample_variant_qc",
+    "type": "string (slash-separated)",
+    "units": "",
+    "values": "P, F"
+  },
+  {
+    "description": "Physicochemical properties for the reference amino acid.",
+    "name": "aa1_total_properties",
+    "type": "string",
+    "units": "",
+    "values": "semicolon-separated properties"
+  },
+  {
+    "description": "Physicochemical properties for the alternate amino acid.",
+    "name": "aa2_total_properties",
+    "type": "string",
+    "units": "",
+    "values": "semicolon-separated properties"
+  },
+  {
+    "description": "Properties unique to the reference amino acid.",
+    "name": "aa1_unique_properties",
+    "type": "string",
+    "units": "",
+    "values": "semicolon-separated properties"
+  },
+  {
+    "description": "Properties unique to the alternate amino acid.",
+    "name": "aa2_unique_properties",
+    "type": "string",
+    "units": "",
+    "values": "semicolon-separated properties"
+  },
+  {
+    "description": "Molecular weight of the reference amino acid.",
+    "name": "aa1_weight",
+    "type": "number",
+    "units": "Da",
+    "values": ""
+  },
+  {
+    "description": "Molecular weight of the alternate amino acid.",
+    "name": "aa2_weight",
+    "type": "number",
+    "units": "Da",
+    "values": ""
+  },
+  {
+    "description": "aa2_weight - aa1_weight.",
+    "name": "weight_difference",
+    "type": "number",
+    "units": "Da",
+    "values": ""
+  },
+  {
+    "description": "Allele frequency per sample (fraction).",
+    "name": "alt_freq",
+    "type": "string (slash-separated)",
+    "units": "fraction",
+    "values": "0-1"
+  },
+  {
+    "description": "Alternate-allele read depth per sample.",
+    "name": "variant_depth",
+    "type": "string (slash-separated)",
+    "units": "reads",
+    "values": ""
+  },
+  {
+    "description": "Total read depth at the variant site per sample.",
+    "name": "variant_site_depth",
+    "type": "string (slash-separated)",
+    "units": "reads",
+    "values": ""
+  },
+  {
+    "description": "Mean read depth in the variant window per sample.",
+    "name": "variant_window_depth",
+    "type": "string (slash-separated)",
+    "units": "reads",
+    "values": ""
+  },
+  {
+    "description": "Sample names corresponding to per-sample fields.",
+    "name": "samples",
+    "type": "string (slash-separated)",
+    "units": "",
+    "values": ""
+  },
+  {
+    "description": "Total genome coverage (bases covered) per sample.",
+    "name": "total_genome_coverage",
+    "type": "string (slash-separated)",
+    "units": "bases",
+    "values": ""
+  }
+]

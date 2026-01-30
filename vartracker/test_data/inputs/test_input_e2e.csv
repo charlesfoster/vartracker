@@ -1,0 +1,7 @@
+sample_name,sample_number,reads1,reads2,bam,vcf,coverage
+test_psg_0,0,../reads/test_psg_0_R1.fastq.gz,../reads/test_psg_0_R2.fastq.gz,,,
+test_psg_1,1,../reads/test_psg_1_R1.fastq.gz,../reads/test_psg_1_R2.fastq.gz,,,
+test_psg_2,2,../reads/test_psg_2_R1.fastq.gz,../reads/test_psg_2_R2.fastq.gz,,,
+test_psg_3,3,../reads/test_psg_3_R1.fastq.gz,../reads/test_psg_3_R2.fastq.gz,,,
+test_psg_4,4,../reads/test_psg_4_R1.fastq.gz,../reads/test_psg_4_R2.fastq.gz,,,
+test_psg_5,5,../reads/test_psg_5_R1.fastq.gz,../reads/test_psg_5_R2.fastq.gz,,,

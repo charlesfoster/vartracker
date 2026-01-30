@@ -8,7 +8,6 @@ import re
 from bisect import bisect_right
 from typing import List, cast
 
-
 # NSP (non-structural protein) coordinates and mappings for SARS-CoV-2
 NSPS = {
     "genes": [

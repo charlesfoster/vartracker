@@ -23,32 +23,78 @@ jobs:
           pip install .[dev]
       - name: Run pre-commit
         run: pre-commit run --all-files --show-diff-on-failure
+      - name: Check output schema docs
+        run: python scripts/check_output_schema.py
 
-  test:
+  build:
     runs-on: ubuntu-latest
     needs: lint
-    strategy:
-      matrix:
-        python-version: ['3.10', '3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bcftools tabix
-      - name: Install dependencies
+          python-version: '3.11'
+      - name: Build package
         run: |
           python -m pip install --upgrade pip
-          pip install .[test]
+          python -m pip install build
+          python -m build
+
+  test:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12']
+    env:
+      MAMBA_ROOT_PREFIX: ${{ runner.temp }}/micromamba-${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup micromamba
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          micromamba-version: "latest"
+          environment-name: bio
+          condarc: |
+            channels:
+              - conda-forge
+              - bioconda
+            channel_priority: strict
+          cache-environment: true
+          cache-downloads: true
+          create-args: >-
+            python=${{ matrix.python-version }}
+            snakemake=9.0.1
+            bcftools=1.21
+            samtools=1.21
+            htslib=1.21
+            lofreq=2.1.5
+            fastp=0.23.4
+            bwa=0.7.17
+
+      - name: Install dependencies
+        run: |
+          micromamba run -n bio python -m pip install --upgrade pip
+          micromamba run -n bio pip install .[test]
+
+      - name: Smoke test CLI
+        env:
+          VARTRACKER_SKIP_BCFTOOLS: "1"
+        run: |
+          micromamba run -n bio vartracker --help
+          micromamba run -n bio vartracker vcf --test --outdir results/smoke
+
       - name: Run tests
         env:
           VARTRACKER_REQUIRE_BCFTOOLS: "1"
         run: |
-          pytest --cov=vartracker --cov-report=xml --cov-report=term-missing
+          micromamba run -n bio pytest --cov=vartracker --cov-report=xml --cov-report=term-missing
+
+      # `act` does not provide ACTIONS_RUNTIME_TOKEN, so this step will be skipped locally
       - name: Upload coverage report
+        if: ${{ env.ACT != 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ matrix.python-version }}

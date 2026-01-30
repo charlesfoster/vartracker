@@ -1,0 +1,45 @@
+# Output schema
+
+Schema version: `1.0`
+
+Generated from `vartracker.schemas.RESULTS_SCHEMA`.
+
+This document describes the columns produced in `results.csv`.
+
+Columns that encode per-sample values are slash-separated and ordered by the input CSV.
+
+| Column | Type | Description | Units | Values |
+| --- | --- | --- | --- | --- |
+| chrom | string | Reference contig name (e.g., NC_045512.2). |  |  |
+| start | integer | 1-based start position of the variant on the reference. | bp |  |
+| end | integer | 1-based end position (inclusive) of the variant. | bp |  |
+| gene | string | Gene or genomic region assigned to the variant. |  |  |
+| ref | string | Reference allele. |  |  |
+| alt | string | Alternate allele. |  |  |
+| variant | string | Concise variant label (ref + position + alt, e.g. A23403G). |  |  |
+| amino_acid_consequence | string | Amino acid consequence for the gene-level annotation. |  | e.g. S:D614G |
+| nsp_aa_change | string | NSP-level amino acid change for ORF1ab annotations. |  |  |
+| bcsq_nt_notation | string | bcftools csq nucleotide notation. |  |  |
+| bcsq_aa_notation | string | bcftools csq amino acid notation. |  |  |
+| type_of_variant | string | Variant type derived from the VCF entry. |  | snp, indel |
+| type_of_change | string | Functional change classification from bcftools csq. |  | synonymous, missense, frameshift, ... |
+| variant_status | string | Whether the variant is present in the first sample. |  | original, new |
+| persistence_status | string | Persistence class based on first and last sample presence. |  | original_retained, original_lost, new_persistent, new_transient |
+| presence_absence | string (slash-separated) | Per-sample presence (Y) or absence (N), ordered by input. |  | Y/N |
+| first_appearance | string | Sample name where the variant first appears. |  |  |
+| last_appearance | string | Sample name where the variant last appears. |  |  |
+| overall_variant_qc | string | Aggregated QC status across samples. |  | PASS, FAIL |
+| per_sample_variant_qc | string (slash-separated) | Per-sample QC flags (P/F) ordered by input. |  | P, F |
+| aa1_total_properties | string | Physicochemical properties for the reference amino acid. |  | semicolon-separated properties |
+| aa2_total_properties | string | Physicochemical properties for the alternate amino acid. |  | semicolon-separated properties |
+| aa1_unique_properties | string | Properties unique to the reference amino acid. |  | semicolon-separated properties |
+| aa2_unique_properties | string | Properties unique to the alternate amino acid. |  | semicolon-separated properties |
+| aa1_weight | number | Molecular weight of the reference amino acid. | Da |  |
+| aa2_weight | number | Molecular weight of the alternate amino acid. | Da |  |
+| weight_difference | number | aa2_weight - aa1_weight. | Da |  |
+| alt_freq | string (slash-separated) | Allele frequency per sample (fraction). | fraction | 0-1 |
+| variant_depth | string (slash-separated) | Alternate-allele read depth per sample. | reads |  |
+| variant_site_depth | string (slash-separated) | Total read depth at the variant site per sample. | reads |  |
+| variant_window_depth | string (slash-separated) | Mean read depth in the variant window per sample. | reads |  |
+| samples | string (slash-separated) | Sample names corresponding to per-sample fields. |  |  |
+| total_genome_coverage | string (slash-separated) | Total genome coverage (bases covered) per sample. | bases |  |

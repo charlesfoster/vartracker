@@ -7,6 +7,9 @@ Contains functions for formatting, merging, and processing VCF files.
 import os
 import re
 import subprocess
+import gzip
+from pathlib import Path
+
 import pandas as pd
 import numpy as np
 from cyvcf2 import VCF, Writer
@@ -14,6 +17,99 @@ from itertools import dropwhile
 
 from .constants import reformat_csq_notation
 from .amino_acids import AminoAcidChange
+
+
+def _open_vcf(path: str, mode: str):
+    if path.endswith(".gz"):
+        return gzip.open(path, mode, encoding="utf-8")
+    return open(path, mode, encoding="utf-8")
+
+
+def _ensure_format_and_sample(
+    vcf_path: str, sample: str, tempdir: str, debug: bool = False
+) -> str:
+    """Ensure VCF has FORMAT header and a sample column; return path to updated VCF."""
+
+    has_format_header = False
+    with _open_vcf(vcf_path, "rt") as src:
+        for line in src:
+            if line.startswith("##FORMAT="):
+                has_format_header = True
+                break
+            if line.startswith("#CHROM"):
+                break
+
+    if has_format_header:
+        return vcf_path
+
+    if debug:
+        print("Formatting VCF to add GT field and sample column...")
+
+    intermediate_path = os.path.join(
+        tempdir, f"{Path(vcf_path).stem}.with_gt_sample.vcf"
+    )
+
+    with (
+        _open_vcf(vcf_path, "rt") as src,
+        open(intermediate_path, "w", encoding="utf-8") as dest,
+    ):
+        format_added = False
+        header_written = False
+
+        for line in src:
+            if line.startswith("##"):
+                if line.startswith("##FORMAT="):
+                    format_added = True
+                dest.write(line)
+                continue
+
+            if line.startswith("#CHROM"):
+                if not format_added:
+                    dest.write(
+                        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+                    )
+                    format_added = True
+
+                header_cols = line.rstrip("\n").split("\t")
+                if len(header_cols) <= 8:
+                    header_cols.extend(["FORMAT", sample])
+                elif header_cols[-1] == "FORMAT":
+                    header_cols.append(sample)
+                else:
+                    header_cols.extend(["FORMAT", sample])
+                dest.write("\t".join(header_cols) + "\n")
+                header_written = True
+                break
+
+            dest.write(line)
+
+        if not header_written:
+            raise RuntimeError("VCF header missing '#CHROM' line")
+
+        for data_line in src:
+            if not data_line.strip() or data_line.startswith("#"):
+                continue
+            parts = data_line.rstrip("\n").split("\t")
+            if len(parts) < 8:
+                continue
+            base_fields = parts[:8]
+            dest.write("\t".join(base_fields + ["GT", "1"]) + "\n")
+
+    sample_file = os.path.join(tempdir, f"{Path(vcf_path).stem}.sample_names.txt")
+    with open(sample_file, "w", encoding="utf-8") as handle:
+        handle.write(f"{sample}\n")
+
+    reheadered_path = os.path.join(tempdir, f"{Path(vcf_path).stem}.with_sample.vcf")
+
+    cmd = f"bcftools reheader -s {sample_file} {intermediate_path} > {reheadered_path}"
+    try:
+        subprocess.run(cmd, shell=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Failed to reheader VCF to add sample information: {exc}"
+        ) from exc
+
+    return reheadered_path
 
 
 def _derive_vcf_output_paths(
@@ -74,7 +170,11 @@ def format_vcf(
     out, csq_file, log = _derive_vcf_output_paths(vcf, tempdir, sample)
 
     try:
-        vcf_mod = VCF(vcf, strict_gt=True)
+        prepared_vcf = _ensure_format_and_sample(vcf, sample, tempdir, debug)
+
+        vcf_mod = VCF(prepared_vcf, strict_gt=True)
+        existing_samples = list(vcf_mod.samples)
+        sample_count = len(existing_samples) if existing_samples else 1
 
         # Validate that the allele frequency tag exists in the VCF
         info_headers = {
@@ -110,6 +210,16 @@ def format_vcf(
                 }
             )
 
+        if "TYPE" not in info_headers:
+            vcf_mod.add_info_to_header(
+                {
+                    "ID": "TYPE",
+                    "Description": "Variant type inferred by vartracker",
+                    "Type": "String",
+                    "Number": "1",
+                }
+            )
+
         # Add FORMAT headers
         vcf_mod.add_format_to_header(
             {"ID": "DP", "Description": "Raw Depth", "Type": "Integer", "Number": "1"}
@@ -123,8 +233,23 @@ def format_vcf(
             }
         )
 
-        w = Writer(out, vcf_mod, mode="wz")
+        if existing_samples:
+            w = Writer(out, vcf_mod, mode="wz")
+        else:
+            header_lines = []
+            for line in vcf_mod.raw_header.strip().splitlines():
+                if line.startswith("#CHROM"):
+                    header_lines.append(f"{line}\t{sample}")
+                else:
+                    header_lines.append(line)
+            header_str = "\n".join(header_lines) + "\n"
+            w = Writer.from_string(out, header_str, mode="wz")
         variants = {}
+
+        def _scalar(value):
+            if isinstance(value, (list, tuple, np.ndarray)):
+                return value[0] if value else 0
+            return value
 
         for v in vcf_mod:
             pos_key = str(v.POS)
@@ -157,11 +282,23 @@ def format_vcf(
                 else:
                     continue
 
+            if v.is_indel:
+                variant_type = "INDEL"
+            elif v.is_snp:
+                variant_type = "SNP"
+            else:
+                variant_type = "OTHER"
+            v.INFO["TYPE"] = variant_type
+
             # Curate variant
             v.ID = v.REF + str(v.POS) + v.ALT[0]
-            v.set_format("DP", np.array([v.INFO["DP"]]))
-            v.set_format("AF", np.array([v.INFO["AF"]]))
-            v.genotypes = [[1, True]]
+            dp_value = _scalar(getattr(v.INFO, "get", lambda *_: 0)("DP", 0))
+            af_value = _scalar(getattr(v.INFO, "get", lambda *_: 0.0)("AF", 0.0))
+            dp_array = np.repeat(dp_value, sample_count)
+            af_array = np.repeat(af_value, sample_count)
+            v.set_format("DP", np.array(dp_array, dtype=int))
+            v.set_format("AF", np.array(af_array, dtype=float))
+            v.genotypes = [[1, True] for _ in range(sample_count)]
             variants[pos_key] = v
 
         for variant in variants.values():
@@ -180,8 +317,24 @@ def format_vcf(
             f"tabix -f -p vcf {csq_file}"
         )
 
-        with open(log, "a", encoding="utf-8") as err:
-            subprocess.run(cmd, shell=True, stderr=err, check=True)
+        try:
+            with open(log, "a", encoding="utf-8") as err:
+                subprocess.run(cmd, shell=True, stderr=err, check=True)
+        except subprocess.CalledProcessError as exc:
+            log_tail = ""
+            if os.path.exists(log):
+                try:
+                    with open(log, "r", encoding="utf-8", errors="replace") as err_file:
+                        tail_lines = err_file.readlines()[-20:]
+                        log_tail = "".join(tail_lines).strip()
+                except OSError:
+                    log_tail = "<unable to read bcftools log>"
+
+            details = log_tail if log_tail else exc.stderr or ""
+            message = f"Command '{cmd}' returned non-zero exit status {exc.returncode}."
+            if details:
+                message = f"{message}\nLast bcftools log lines:\n{details}"
+            raise RuntimeError(message) from exc
 
         if debug:
             print(f"Command: {cmd}")
@@ -208,9 +361,15 @@ def merge_consequences(tempdir, csq_file, sample_names, debug):
     with open(vcf_list_file, "r") as f:
         vcf_files = [line.strip() for line in f if line.strip()]
 
+    probe_vcf = VCF(vcf_files[0])
+    has_samples = len(probe_vcf.samples) > 0
+    probe_vcf.close()
+
     if len(vcf_files) == 1:
-        # Handle single sample case - just reheader the single file
-        cmd = f"bcftools reheader -s {sample_names} {vcf_files[0]} > {csq_file}"
+        if has_samples:
+            cmd = f"bcftools reheader -s {sample_names} {vcf_files[0]} > {csq_file}"
+        else:
+            cmd = f"bcftools view -Ov {vcf_files[0]} > {csq_file}"
     else:
         # Handle multiple samples case - merge then reheader
         cmd = (
@@ -227,7 +386,7 @@ def merge_consequences(tempdir, csq_file, sample_names, debug):
         raise RuntimeError(f"Error merging VCF files: {str(e)}")
 
 
-def calculate_variant_site_depths(cov_df, v, samples):
+def calculate_variant_site_depths(cov_df, v, samples, min_depth: int):
     """
     Calculate depth metrics for variant sites.
 
@@ -275,21 +434,34 @@ def calculate_variant_site_depths(cov_df, v, samples):
         int(round(x, 0)) for x in list(window_depth.sort_values("order")["depth"])
     ]
 
-    variant_depths = [
-        (x[0] * 0) - 1 if x[0] < 0 else x[0] for x in v.format("DP").tolist()
-    ]
+    try:
+        dp_values = v.format("DP").tolist()
+    except (KeyError, AttributeError, ValueError, RuntimeError):
+        info_dp = v.INFO.get("DP")
+        if isinstance(info_dp, (list, tuple)):
+            dp_values = [[int(float(info_dp[0] or 0))]] * len(samples)
+        elif info_dp is not None:
+            try:
+                dp_val = int(float(info_dp))
+            except (TypeError, ValueError):
+                dp_val = 0
+            dp_values = [[dp_val]] * len(samples)
+        else:
+            dp_values = [[-1]] * len(samples)
+
+    variant_depths = [(x[0] * 0) - 1 if x[0] < 0 else x[0] for x in dp_values]
 
     variant_qc = []
     for x, y, z in zip(variant_depths, site_depths, window_depth):
         if x >= 0:
             variant_qc.append("P")
-        elif x < 0 and y >= 10:
+        elif x < 0 and y >= min_depth:
             variant_qc.append("P")
-        elif v.is_indel and x < 0 and y < 10 and z >= 10:
+        elif v.is_indel and x < 0 and y < min_depth and z >= min_depth:
             variant_qc.append("P")
-        elif v.var_type == "snp" and x < 0 and y < 10:
+        elif v.var_type == "snp" and x < 0 and y < min_depth:
             variant_qc.append("F")
-        elif x < 0 and y < 10 and z < 10:
+        elif x < 0 and y < min_depth and z < min_depth:
             variant_qc.append("F")
 
     variant_depths = ["M" if x == -1 else x for x in variant_depths]
@@ -304,7 +476,7 @@ def calculate_variant_site_depths(cov_df, v, samples):
     return result
 
 
-def process_vcf(vcf_file, covs):
+def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
     """
     Process VCF file and extract variant information.
 
@@ -317,7 +489,22 @@ def process_vcf(vcf_file, covs):
     """
     results = []
     vcf = VCF(vcf_file)
-    samples = vcf.samples
+    samples = list(vcf.samples)
+
+    if sample_names_override is not None:
+        override = list(sample_names_override)
+        if not samples or len(samples) != len(override):
+            samples = override
+
+    if not samples:
+        raise RuntimeError(
+            "No sample columns present in VCF and no sample names could be inferred."
+        )
+
+    if len(samples) != len(covs):
+        raise RuntimeError(
+            "Number of coverage files does not match number of VCF samples."
+        )
 
     # Load coverage data
     cov_list = []
@@ -338,9 +525,38 @@ def process_vcf(vcf_file, covs):
     # Process variants
     for v in vcf:
         info = dict(list(v.INFO))
-        allele_freqs = [
-            "{:.3f}".format(x[0]).replace("nan", ".") for x in v.format("AF").tolist()
-        ]
+        try:
+            allele_freq_arrays = v.format("AF").tolist()
+        except (KeyError, AttributeError, ValueError, RuntimeError):
+            allele_freq_arrays = None
+
+        if allele_freq_arrays:
+            allele_freqs = [
+                "{:.3f}".format(x[0]).replace("nan", ".") for x in allele_freq_arrays
+            ]
+        else:
+            info_af = v.INFO.get("AF") or v.INFO.get("VAF")
+            if isinstance(info_af, (list, tuple)):
+                values = list(info_af)
+            elif info_af is None:
+                values = [None] * len(samples)
+            else:
+                values = [info_af]
+            if not values:
+                values = [None]
+            if len(values) < len(samples):
+                values.extend([values[-1]] * (len(samples) - len(values)))
+            allele_freqs = []
+            for val in values[: len(samples)]:
+                if val is None:
+                    allele_freqs.append(".")
+                    continue
+                try:
+                    allele_freqs.append("{:.3f}".format(float(val)))
+                except (TypeError, ValueError):
+                    allele_freqs.append(".")
+            if not allele_freqs:
+                allele_freqs = ["."] * max(1, len(samples))
         presence_absence = ["N" if x == "." else "Y" for x in allele_freqs]
         variant_status = "new" if allele_freqs[0] == "." else "original"
 
@@ -356,7 +572,7 @@ def process_vcf(vcf_file, covs):
         else:
             persistent_status = "unknown"
 
-        depths_qc = calculate_variant_site_depths(cov_df, v, samples)
+        depths_qc = calculate_variant_site_depths(cov_df, v, samples, min_depth)
         overall_variant_qc = "FAIL" if "F" in depths_qc["variant_qc"] else "PASS"
         first_appearance = (
             samples[presence_absence.index("Y")] if "Y" in presence_absence else "None"

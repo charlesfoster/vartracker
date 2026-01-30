@@ -1,0 +1,7 @@
+sample_name,sample_number,reads1,reads2,bam,vcf,coverage
+test_psg_0,0,,,,../vcfs/test_psg_0.vcf.gz,../coverage/test_psg_0.depth.txt
+test_psg_1,1,,,,../vcfs/test_psg_1.vcf.gz,../coverage/test_psg_1.depth.txt
+test_psg_2,2,,,,../vcfs/test_psg_2.vcf.gz,../coverage/test_psg_2.depth.txt
+test_psg_3,3,,,,../vcfs/test_psg_3.vcf.gz,../coverage/test_psg_3.depth.txt
+test_psg_4,4,,,,../vcfs/test_psg_4.vcf.gz,../coverage/test_psg_4.depth.txt
+test_psg_5,5,,,,../vcfs/test_psg_5.vcf.gz,../coverage/test_psg_5.depth.txt

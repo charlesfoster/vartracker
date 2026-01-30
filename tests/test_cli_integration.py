@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -26,6 +27,7 @@ def test_cli_test_flag_runs_successfully(tmp_path):
         sys.executable,
         "-m",
         "vartracker.main",
+        "vcf",
         "--test",
         "--outdir",
         str(outdir),
@@ -39,3 +41,11 @@ def test_cli_test_flag_runs_successfully(tmp_path):
 
     content = results_csv.read_text(encoding="utf-8")
     assert "variant" in content
+
+    manifest_path = outdir / "run_metadata.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "success"
+    run_id = manifest.get("run_id")
+    assert run_id
+    assert (outdir / "runs" / f"run_metadata.{run_id}.json").exists()

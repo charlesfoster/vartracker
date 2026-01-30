@@ -1,6 +1,11 @@
 include README.md
+include CITATION.cff
 include LICENSE
+include .zenodo.json
+include environment.yml
 include pyproject.toml
+include docs/OUTPUT_SCHEMA.md
+include docs/DEPENDENCIES.md
 recursive-include vartracker/data *.fasta
 recursive-include vartracker/data *.fai
 recursive-include vartracker/data *.gff3
