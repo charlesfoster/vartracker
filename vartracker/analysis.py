@@ -609,7 +609,7 @@ def _slugify_anchor(value: str) -> str:
     cleaned = re.sub(r"[^0-9A-Za-z]+", "-", value).strip("-").lower()
     if not cleaned:
         cleaned = "entry"
-    return f"pokay-{cleaned}"
+    return f"literature-{cleaned}"
 
 
 def _canonical_label(value: str) -> str:
@@ -648,13 +648,13 @@ def _linkify_reference_cell(text: str) -> str:
     return "".join(result)
 
 
-def _build_pokay_table_html(
+def _build_literature_table_html(
     df: Optional[pd.DataFrame],
     anchor_lookup: Dict[str, str],
     table_path: Optional[str],
 ) -> str:
     if df is None or df.empty:
-        return '<p class="pokay-empty">No pokay matches were found for the new mutations.</p>'
+        return '<p class="literature-empty">No literature matches were found for the new mutations.</p>'
 
     columns = [html.escape(str(col)) for col in df.columns]
     header_cells = "".join(f"<th>{col}</th>" for col in columns)
@@ -686,7 +686,7 @@ def _build_pokay_table_html(
         else:
             row_attrs = f'data-anchor="{canonical_key}"'
         body_rows.append(
-            f"<tr {row_attrs} class=\"pokay-row\">{''.join(body_cells)}</tr>"
+            f"<tr {row_attrs} class=\"literature-row\">{''.join(body_cells)}</tr>"
         )
 
     caption = ""
@@ -694,7 +694,7 @@ def _build_pokay_table_html(
         caption = f'<caption class="info-note">Source: {html.escape(os.path.basename(table_path))}</caption>'
 
     body_html = "<tbody>" + "".join(body_rows) + "</tbody>"
-    return f'<table class="pokay-table">{caption}{header_html}{body_html}</table>'
+    return f'<table class="literature-table">{caption}{header_html}{body_html}</table>'
 
 
 def _write_interactive_heatmap_html(
@@ -702,8 +702,8 @@ def _write_interactive_heatmap_html(
     sample_names: Sequence[str],
     outdir: str,
     project_name: str,
-    pokay_df: Optional[pd.DataFrame],
-    pokay_table_path: Optional[str],
+    literature_df: Optional[pd.DataFrame],
+    literature_table_path: Optional[str],
     cli_command: Optional[str],
 ) -> None:
     if matrix.empty:
@@ -717,15 +717,19 @@ def _write_interactive_heatmap_html(
     label_map: Dict[str, str] = matrix.attrs.get("base_labels", {})
     canonical_label_map: Dict[str, str] = matrix.attrs.get("canonical_labels", {})
 
-    if pokay_df is None and pokay_table_path and os.path.exists(pokay_table_path):
+    if (
+        literature_df is None
+        and literature_table_path
+        and os.path.exists(literature_table_path)
+    ):
         try:
-            pokay_df = pd.read_csv(pokay_table_path)
+            literature_df = pd.read_csv(literature_table_path)
         except Exception:
-            pokay_df = None
+            literature_df = None
 
     highlight_keys: Dict[str, str] = {}
-    if pokay_df is not None and not pokay_df.empty:
-        for _, prow in pokay_df.iterrows():
+    if literature_df is not None and not literature_df.empty:
+        for _, prow in literature_df.iterrows():
             key = _normalise_base_label(
                 prow.get("gene"), prow.get("amino_acid_consequence")
             )
@@ -757,7 +761,7 @@ def _write_interactive_heatmap_html(
         if anchor_id:
             header_html = (
                 '<div class="grid-header grid-variant">'
-                f'<a href="#pokay-results" class="heatmap-anchor" data-anchor="{canonical_key}">{safe_label}</a>'
+                f'<a href="#literature-results" class="heatmap-anchor" data-anchor="{canonical_key}">{safe_label}</a>'
                 "</div>"
             )
         else:
@@ -801,8 +805,8 @@ def _write_interactive_heatmap_html(
         else "Variant allele frequencies"
     )
 
-    pokay_table_html = _build_pokay_table_html(
-        pokay_df, highlight_keys, pokay_table_path
+    literature_table_html = _build_literature_table_html(
+        literature_df, highlight_keys, literature_table_path
     )
     logo_html = f'<pre class="logo">{html.escape(get_logo())}</pre>'
     summary_html = ""
@@ -945,36 +949,36 @@ def _write_interactive_heatmap_html(
     .heatmap-anchor:hover {{
       text-decoration: underline;
     }}
-    .pokay-table {{
+    .literature-table {{
       width: 100%;
       border-collapse: collapse;
       margin-top: 16px;
       font-size: 0.95rem;
     }}
-    .pokay-table caption {{
+    .literature-table caption {{
       caption-side: bottom;
       text-align: left;
       padding-top: 8px;
     }}
-    .pokay-table th,
-    .pokay-table td {{
+    .literature-table th,
+    .literature-table td {{
       border: 1px solid #e5e7eb;
       padding: 8px 12px;
       text-align: left;
       vertical-align: top;
     }}
-    .pokay-table th {{
+    .literature-table th {{
       background: #f3f4f6;
       font-weight: 600;
     }}
-    .pokay-table tr:nth-child(even) {{
+    .literature-table tr:nth-child(even) {{
       background: #f9fafb;
     }}
-    .pokay-row.is-active {{
+    .literature-row.is-active {{
       background: #fff6c7 !important;
       box-shadow: inset 0 0 0 2px #facc15 !important;
     }}
-    .pokay-empty {{
+    .literature-empty {{
       color: #6b7280;
       margin: 0;
     }}
@@ -1011,18 +1015,18 @@ def _write_interactive_heatmap_html(
     {summary_html}
     <section class="card">
       <h1>Interactive variant heatmap</h1>
-      <p class="info-note">Hover to view exact allele frequencies. Click highlighted variants to jump to supporting pokay annotations.</p>
+      <p class="info-note">Hover to view exact allele frequencies. Click highlighted variants to jump to supporting literature annotations.</p>
       {heatmap_scroll_html}
     </section>
-    <section class="card" id="pokay-results">
-      <h1>Pokay results</h1>
-      <div class="table-scroll">{pokay_table_html}</div>
+    <section class="card" id="literature-results">
+      <h1>Literature results</h1>
+      <div class="table-scroll">{literature_table_html}</div>
     </section>
   </main>
   <script>
     (function() {{
       const anchors = Array.from(document.querySelectorAll('.heatmap-anchor'));
-      const rows = Array.from(document.querySelectorAll('.pokay-row'));
+      const rows = Array.from(document.querySelectorAll('.literature-row'));
       const clearActive = () => rows.forEach(row => {{
         row.classList.remove('is-active');
         row.style.backgroundColor = '';
@@ -1042,7 +1046,7 @@ def _write_interactive_heatmap_html(
             row.style.boxShadow = 'inset 0 0 0 2px #facc15';
           }});
           matches[0].scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-          history.replaceState(null, '', '#pokay-results');
+          history.replaceState(null, '', '#literature-results');
         }});
       }});
     }})();
@@ -1065,8 +1069,8 @@ def generate_variant_heatmap(
     min_snv_freq: float,
     min_indel_freq: float,
     gene_lengths: Dict[str, int] | None = None,
-    pokay_hits: Optional[pd.DataFrame] = None,
-    pokay_table_path: Optional[str] = None,
+    literature_hits: Optional[pd.DataFrame] = None,
+    literature_table_path: Optional[str] = None,
     cli_command: Optional[str] = None,
 ):
     """Generate a heatmap of variant allele frequencies across passages."""
@@ -1120,8 +1124,8 @@ def generate_variant_heatmap(
                 sample_names,
                 outdir,
                 project_name,
-                pokay_hits,
-                pokay_table_path,
+                literature_hits,
+                literature_table_path,
                 cli_command,
             )
         except Exception as html_exc:  # pragma: no cover - best-effort UX
@@ -1131,39 +1135,39 @@ def generate_variant_heatmap(
         raise RuntimeError(f"Error generating variant heatmap: {exc}") from exc
 
 
-def search_pokay(table, pokay, outdir, pokay_name, debug=False):
+def search_literature(table, literature, outdir, output_name, debug=False):
     """
-    Search mutations against the pokay functional database.
+    Search mutations against the literature database.
 
     Args:
         table (pd.DataFrame): Variants table
-        pokay (pd.DataFrame): Pokay database
+        literature (pd.DataFrame): Literature database
         outdir (str): Output directory
-        pokay_name (str): Name for output files
+        output_name (str): Name for output files
         debug (bool): Whether to print debug information
 
     Returns:
         pd.DataFrame: Full search results
     """
-    print("Searching 'pokay' database to find significant mutations...\n")
+    print("Searching literature database to find significant mutations...\n")
 
     if debug:
         print(f"Input table shape: {table.shape}")
         print(f"Input table columns: {list(table.columns)}")
-        print(f"Pokay database shape: {pokay.shape}")
-        print(f"Pokay database columns: {list(pokay.columns)}")
+        print(f"Literature database shape: {literature.shape}")
+        print(f"Literature database columns: {list(literature.columns)}")
 
     collector = []
 
-    # Normalize pokay lookup columns to avoid nullable boolean masks
-    pokay_gene = pokay.get("gene")
-    pokay_mutation = pokay.get("mutation")
+    # Normalize lookup columns to avoid nullable boolean masks
+    literature_gene = literature.get("gene")
+    literature_mutation = literature.get("mutation")
 
-    if pokay_gene is None or pokay_mutation is None:
-        raise ValueError("Pokay database must contain 'gene' and 'mutation' columns")
+    if literature_gene is None or literature_mutation is None:
+        raise ValueError("Literature CSV must contain 'gene' and 'mutation' columns")
 
-    pokay_gene_series = pokay_gene.astype("string").fillna("")
-    pokay_mutation_series = pokay_mutation.astype("string").fillna("")
+    literature_gene_series = literature_gene.astype("string").fillna("")
+    literature_mutation_series = literature_mutation.astype("string").fillna("")
 
     for _, row in table.iterrows():
         gene = row["gene"]
@@ -1183,16 +1187,18 @@ def search_pokay(table, pokay, outdir, pokay_name, debug=False):
             search_gene_str = str(search_gene) if search_gene is not None else ""
             search_mut_str = str(search_mut) if search_mut is not None else ""
 
-            gene_mask = (pokay_gene_series == search_gene_str).fillna(False)
-            mutation_mask = pokay_mutation_series.str.contains(
+            gene_mask = (literature_gene_series == search_gene_str).fillna(False)
+            mutation_mask = literature_mutation_series.str.contains(
                 search_mut_str, regex=False, na=False
             ).fillna(False)
 
-            combined_mask = pd.Series(gene_mask & mutation_mask, index=pokay.index)
-            gdf = pokay.loc[combined_mask.astype(bool)]
+            combined_mask = pd.Series(gene_mask & mutation_mask, index=literature.index)
+            gdf = literature.loc[combined_mask.astype(bool)]
         except Exception as e:
             if debug:
-                print(f"Error searching pokay for {search_gene} {search_mut}: {str(e)}")
+                print(
+                    f"Error searching literature for {search_gene} {search_mut}: {str(e)}"
+                )
             gdf = pd.DataFrame()
 
         if len(gdf) == 0:
@@ -1228,7 +1234,7 @@ def search_pokay(table, pokay, outdir, pokay_name, debug=False):
 
     # Handle empty collector gracefully
     if len(collector) == 0:
-        print("No mutations found to search against pokay database.")
+        print("No mutations found to search against literature database.")
         # Return empty DataFrames with expected structure
         empty_df = pd.DataFrame(
             columns=[
@@ -1240,9 +1246,13 @@ def search_pokay(table, pokay, outdir, pokay_name, debug=False):
                 "reference",
             ]
         )
-        fname1 = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.full.csv")
+        fname1 = os.path.join(
+            outdir, f"{output_name}.literature_database_hits.full.csv"
+        )
         empty_df.to_csv(fname1, index=None)
-        fname = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.concise.csv")
+        fname = os.path.join(
+            outdir, f"{output_name}.literature_database_hits.concise.csv"
+        )
         empty_df.drop(columns=["database_mutation_string", "prior_information"]).to_csv(
             fname, index=None
         )
@@ -1270,9 +1280,13 @@ def search_pokay(table, pokay, outdir, pokay_name, debug=False):
                 "reference",
             ]
         )
-        fname1 = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.full.csv")
+        fname1 = os.path.join(
+            outdir, f"{output_name}.literature_database_hits.full.csv"
+        )
         empty_df.to_csv(fname1, index=None)
-        fname = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.concise.csv")
+        fname = os.path.join(
+            outdir, f"{output_name}.literature_database_hits.concise.csv"
+        )
         empty_df.drop(columns=["database_mutation_string", "prior_information"]).to_csv(
             fname, index=None
         )
@@ -1293,9 +1307,13 @@ def search_pokay(table, pokay, outdir, pokay_name, debug=False):
                 "reference",
             ]
         )
-        fname1 = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.full.csv")
+        fname1 = os.path.join(
+            outdir, f"{output_name}.literature_database_hits.full.csv"
+        )
         empty_df.to_csv(fname1, index=None)
-        fname = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.concise.csv")
+        fname = os.path.join(
+            outdir, f"{output_name}.literature_database_hits.concise.csv"
+        )
         empty_df.drop(columns=["database_mutation_string", "prior_information"]).to_csv(
             fname, index=None
         )
@@ -1318,7 +1336,7 @@ def search_pokay(table, pokay, outdir, pokay_name, debug=False):
     else:
         reformatted1 = key_muts[to_keep]
 
-    fname1 = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.full.csv")
+    fname1 = os.path.join(outdir, f"{output_name}.literature_database_hits.full.csv")
     reformatted1.to_csv(fname1, index=None)
 
     # Create concise output
@@ -1359,7 +1377,7 @@ def search_pokay(table, pokay, outdir, pokay_name, debug=False):
         ref_list.append("; ".join(y))
     reformatted["reference"] = ref_list
 
-    fname = os.path.join(outdir, f"{pokay_name}.pokay_database_hits.concise.csv")
+    fname = os.path.join(outdir, f"{output_name}.literature_database_hits.concise.csv")
     reformatted.drop_duplicates().to_csv(fname, index=None)
 
     # Print stats
@@ -1369,3 +1387,8 @@ def search_pokay(table, pokay, outdir, pokay_name, debug=False):
     print(f"See: {fname}")
 
     return reformatted1
+
+
+def search_pokay(table, pokay, outdir, pokay_name, debug=False):
+    """Compatibility alias for older callers."""
+    return search_literature(table, pokay, outdir, pokay_name, debug=debug)

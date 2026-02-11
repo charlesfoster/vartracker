@@ -1,4 +1,5 @@
 """Utilities for preparing reference bundles from GenBank accessions."""
+
 # modified based on/inspired by:
 # - work by Damien Farrell https://dmnfarrell.github.io/bioinformatics/bcftools-csq-gff-format
 # - script bundled with bcftools: https://github.com/samtools/bcftools/blob/develop/misc/gff2gff.py
@@ -15,7 +16,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Sequence
 
 from Bio import SeqIO
 from Bio.SeqFeature import CompoundLocation, SeqFeature
@@ -172,7 +173,9 @@ def _feature_parts(feature: SeqFeature) -> list[tuple[int, int]]:
     return [(int(part.start) + 1, int(part.end)) for part in parts]
 
 
-def _cds_phases(feature: SeqFeature, parts: Sequence[tuple[int, int]]) -> dict[tuple[int, int], str]:
+def _cds_phases(
+    feature: SeqFeature, parts: Sequence[tuple[int, int]]
+) -> dict[tuple[int, int], str]:
     codon_start_raw = feature.qualifiers.get("codon_start", ["1"])[0]
     try:
         codon_start = int(codon_start_raw)
@@ -232,7 +235,11 @@ def convert_genbank_to_features(
                 score=".",
                 strand=strand,
                 phase=".",
-                attributes=(("ID", gene_id), ("Name", name), ("biotype", "protein_coding")),
+                attributes=(
+                    ("ID", gene_id),
+                    ("Name", name),
+                    ("biotype", "protein_coding"),
+                ),
             )
         )
         features.append(
@@ -255,9 +262,15 @@ def convert_genbank_to_features(
         )
 
         phase_map = _cds_phases(feature, parts)
-        for part_idx, (start, end) in enumerate(sorted(parts, key=lambda x: (x[0], x[1])), start=1):
+        for part_idx, (start, end) in enumerate(
+            sorted(parts, key=lambda x: (x[0], x[1])), start=1
+        ):
             cds_id = cds_base_id if len(parts) == 1 else f"{cds_base_id}.{part_idx}"
-            attrs: list[tuple[str, str]] = [("ID", cds_id), ("Parent", transcript_id), ("gene", name)]
+            attrs: list[tuple[str, str]] = [
+                ("ID", cds_id),
+                ("Parent", transcript_id),
+                ("gene", name),
+            ]
             protein_ids = feature.qualifiers.get("protein_id")
             if protein_ids and protein_ids[0]:
                 attrs.append(("protein_id", str(protein_ids[0])))
@@ -283,7 +296,9 @@ def convert_genbank_to_features(
     return sequence, features
 
 
-def _write_fasta_with_index(records: Sequence[tuple[str, str]], fasta_path: Path) -> Path:
+def _write_fasta_with_index(
+    records: Sequence[tuple[str, str]], fasta_path: Path
+) -> Path:
     wrap = 60
     index_rows: list[tuple[str, int, int, int, int]] = []
 
@@ -374,7 +389,9 @@ def _write_dummy_vcf(
 
 
 def _fasta_lengths(fasta_path: Path) -> dict[str, int]:
-    return {record.id: len(record.seq) for record in SeqIO.parse(str(fasta_path), "fasta")}
+    return {
+        record.id: len(record.seq) for record in SeqIO.parse(str(fasta_path), "fasta")
+    }
 
 
 def validate_csq_with_dummy_variant(
@@ -421,7 +438,9 @@ def validate_csq_with_dummy_variant(
     result = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         stderr_snippet = (result.stderr or "").strip().splitlines()[-10:]
-        snippet_text = "\n".join(stderr_snippet) if stderr_snippet else "No stderr output."
+        snippet_text = (
+            "\n".join(stderr_snippet) if stderr_snippet else "No stderr output."
+        )
         raise RuntimeError(
             "bcftools csq validation failed.\n"
             f"Command: {' '.join(cmd)}\n"
@@ -507,7 +526,9 @@ def prepare_reference_bundle(
             fasta_intermediate.write_text(
                 f">{accession}\n{sequence}\n", encoding="utf-8"
             )
-            _write_merged_gff3([x for x in features if x.seqid == accession], gff_intermediate)
+            _write_merged_gff3(
+                [x for x in features if x.seqid == accession], gff_intermediate
+            )
             per_item.update(
                 {
                     "genbank": str(gb_path),
@@ -528,7 +549,10 @@ def prepare_reference_bundle(
 
     csq_validation: dict[str, object]
     if skip_csq_validation:
-        csq_validation = {"status": "skipped", "reason": "Skipped by --skip-csq-validation"}
+        csq_validation = {
+            "status": "skipped",
+            "reason": "Skipped by --skip-csq-validation",
+        }
     else:
         csq_validation = validate_csq_with_dummy_variant(
             fasta_path=fasta_path,
@@ -576,7 +600,9 @@ def prepare_reference_bundle(
     if checksum_errors:
         metadata["checksum_errors"] = checksum_errors
 
-    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
+    )
     if not keep_intermediates:
         try:
             intermediates_dir.rmdir()

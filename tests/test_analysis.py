@@ -5,13 +5,13 @@ from __future__ import annotations
 import pandas as pd
 
 from vartracker.analysis import (
-    search_pokay,
+    search_literature,
     _prepare_variant_heatmap_matrix,
     generate_variant_heatmap,
 )
 
 
-def test_search_pokay_handles_nullable_boolean_masks(tmp_path):
+def test_search_literature_handles_nullable_boolean_masks(tmp_path):
     table = pd.DataFrame(
         {
             "gene": ["S"],
@@ -20,7 +20,7 @@ def test_search_pokay_handles_nullable_boolean_masks(tmp_path):
         }
     )
 
-    pokay = pd.DataFrame(
+    literature = pd.DataFrame(
         {
             "gene": pd.Series(["S", pd.NA], dtype="string"),
             "mutation": pd.Series(["S:N501Y", ""], dtype="string"),
@@ -30,11 +30,11 @@ def test_search_pokay_handles_nullable_boolean_masks(tmp_path):
         }
     )
 
-    result = search_pokay(table, pokay, tmp_path, "sample")
+    result = search_literature(table, literature, tmp_path, "sample")
 
     assert not result.empty
-    assert (tmp_path / "sample.pokay_database_hits.full.csv").exists()
-    assert (tmp_path / "sample.pokay_database_hits.concise.csv").exists()
+    assert (tmp_path / "sample.literature_database_hits.full.csv").exists()
+    assert (tmp_path / "sample.literature_database_hits.concise.csv").exists()
 
 
 def test_prepare_variant_heatmap_matrix_orders_variants_by_genome():
@@ -178,7 +178,7 @@ def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch
         ]
     )
 
-    pokay_hits = pd.DataFrame(
+    literature_hits = pd.DataFrame(
         {
             "gene": ["S", "nsp6"],
             "amino_acid_consequence": ["D215G", "L37F"],
@@ -189,8 +189,8 @@ def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch
         }
     )
 
-    pokay_csv = tmp_path / "sample.pokay_database_hits.full.csv"
-    pokay_hits.to_csv(pokay_csv, index=False)
+    literature_csv = tmp_path / "sample.literature_database_hits.full.csv"
+    literature_hits.to_csv(literature_csv, index=False)
 
     command_str = "vartracker vcf input.csv --outdir results"
 
@@ -202,8 +202,8 @@ def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch
         "Example",
         0.05,
         0.05,
-        pokay_hits=pokay_hits,
-        pokay_table_path=str(pokay_csv),
+        literature_hits=literature_hits,
+        literature_table_path=str(literature_csv),
         cli_command=command_str,
     )
 
@@ -219,7 +219,7 @@ def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch
     assert command_str in content
     assert "heatmap-grid" in content
     assert "heatmap-scroll" in content
-    assert "Pokay results" in content
+    assert "Literature results" in content
     assert "table-scroll" in content
     assert "heatmap-anchor" in content
     assert 'data-anchor="s:d215g' in content

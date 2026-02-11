@@ -27,14 +27,16 @@ def test_cli_version_option():
 
 
 def test_cli_describe_output():
-    exit_code, out = _run_main("schema")
+    exit_code, out = _run_main("schema", "results")
     assert exit_code == 0
     assert "Output schema" in out
 
 
 def test_cli_describe_output_writes_json(tmp_path):
     output_path = tmp_path / "schema.json"
-    exit_code, out = _run_main("schema", "--out", str(output_path), "--format", "json")
+    exit_code, out = _run_main(
+        "schema", "results", "--out", str(output_path), "--format", "json"
+    )
     assert exit_code == 0
     assert output_path.exists()
     payload = json.loads(output_path.read_text(encoding="utf-8"))
@@ -47,6 +49,14 @@ def test_cli_missing_arguments_prints_help():
     exit_code, out = _run_main()
     assert exit_code == 1
     assert "usage" in out.lower()
+
+
+def test_cli_literature_schema():
+    exit_code, out = _run_main("schema", "literature")
+    assert exit_code == 0
+    assert "Literature schema" in out
+    assert "gene:" in out
+    assert "reference:" in out
 
 
 def test_prepare_reference_requires_accessions_source(tmp_path):

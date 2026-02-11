@@ -39,7 +39,7 @@ from .analysis import (
     generate_gene_table,
     plot_gene_table,
     generate_variant_heatmap,
-    search_pokay,
+    search_literature,
 )
 from ._version import __version__
 from .provenance import (
@@ -63,6 +63,44 @@ from .reference_prepare import parse_accessions, prepare_reference_bundle
 _RED = "\033[91m"
 _YELLOW = "\033[93m"
 _RESET = "\033[0m"
+
+LITERATURE_SCHEMA: list[dict[str, str]] = [
+    {
+        "name": "gene",
+        "type": "string",
+        "description": "Gene symbol.",
+        "units": "",
+        "values": "e.g. S",
+    },
+    {
+        "name": "category",
+        "type": "string",
+        "description": 'Functional category/grouping criterion (e.g. "homoplasy").',
+        "units": "",
+        "values": "",
+    },
+    {
+        "name": "mutation",
+        "type": "string",
+        "description": "Short-hand amino acid consequence notation.",
+        "units": "",
+        "values": "e.g. D614G",
+    },
+    {
+        "name": "information",
+        "type": "string",
+        "description": "Information relating to the putative effect of this mutation.",
+        "units": "",
+        "values": "",
+    },
+    {
+        "name": "reference",
+        "type": "string",
+        "description": "Semi-colon-delimited list of DOIs/references.",
+        "units": "",
+        "values": "e.g. 10.1038/s41586-020-2012-7; 10.1016/S0140-6736(20)30154-9",
+    },
+]
 
 
 def _print_dependency_error(error: DependencyError) -> None:
@@ -233,13 +271,12 @@ def _prepare_test_run(args, mode: str):
         )
     _make_csv_paths_absolute(csv_path)
 
-    pokay_path = base / "mock_pokay" / "mock_pokay.csv"
-    if not pokay_path.exists():
-        raise InputValidationError("Bundled mock pokay database not found")
+    literature_path = base / "mock_literature" / "mock_literature.csv"
+    if not literature_path.exists():
+        raise InputValidationError("Bundled mock literature database not found")
 
-    args.search_pokay = True
-    args.download_pokay = False
-    args.pokay_csv = str(pokay_path)
+    args.search_pokay = False
+    args.literature_csv = str(literature_path)
     if args.name is None:
         args.name = f"vartracker_{mode}_demo"
 
@@ -355,22 +392,16 @@ def _configure_vcf_parser(
         default=False,
     )
     vt_group.add_argument(
-        "--pokay-csv",
+        "--literature-csv",
         action="store",
         required=False,
         default=None,
-        help="Path to a pre-parsed pokay CSV file",
+        help="Path to a literature CSV file (see README for file structure)",
     )
     vt_group.add_argument(
         "--search-pokay",
         action="store_true",
-        help="Run literature search against the pokay database.",
-        default=False,
-    )
-    vt_group.add_argument(
-        "--download-pokay",
-        action="store_true",
-        help="Automatically download and parse the pokay literature database.",
+        help='Automatically download and search against the "pokay" SARS-CoV-2 literature database.',
         default=False,
     )
     vt_group.add_argument(
@@ -628,13 +659,18 @@ def _add_prep_subparser(subparsers):
 
 
 def _add_schema_subparser(subparsers):
-    description = "Describe the output schema for vartracker results."
+    description = "Describe schemas for vartracker outputs and literature inputs."
     schema_parser = subparsers.add_parser(
         "schema",
-        help="Print the output schema for results tables",
+        help="Print schemas for results tables or literature CSV input",
         description=description,
         aliases=["describe-output"],
         formatter_class=FlexiFormatter,
+    )
+    schema_parser.add_argument(
+        "schema_target",
+        choices=["results", "literature"],
+        help="Schema target to describe",
     )
 
     schema_parser.add_argument(
@@ -855,19 +891,24 @@ def _run_vcf_command(args):
             if args.passage_cap is not None:
                 input_file = input_file[input_file["sample_number"] <= args.passage_cap]
 
-            pokay = None
-            if args.search_pokay:
-                if args.pokay_csv is not None:
-                    try:
-                        pokay = pd.read_csv(args.pokay_csv)
-                    except Exception as e:
-                        raise InputValidationError(
-                            f"Could not read pokay database: {str(e)}"
-                        )
-                elif not args.download_pokay:
+            literature = None
+            if args.search_pokay and args.literature_csv is not None:
+                raise InputValidationError(
+                    "Use either --search-pokay or --literature-csv, not both."
+                )
+
+            if args.literature_csv is not None:
+                try:
+                    literature = pd.read_csv(args.literature_csv)
+                except Exception as e:
                     raise InputValidationError(
-                        "--search-pokay requires either --pokay-csv or --download-pokay"
+                        f"Could not read literature CSV: {str(e)}"
                     )
+                for column in ("gene", "mutation"):
+                    if column not in literature.columns:
+                        raise InputValidationError(
+                            "Literature CSV must contain 'gene' and 'mutation' columns."
+                        )
 
             # Set up variables
             vcfs = list(input_file["vcf"])
@@ -893,7 +934,7 @@ def _run_vcf_command(args):
                         sample_names,
                         covs,
                         input_file,
-                        pokay,
+                        literature,
                         gene_lengths_override,
                     )
 
@@ -917,7 +958,7 @@ def _run_vcf_command(args):
                         sample_names,
                         covs,
                         input_file,
-                        pokay,
+                        literature,
                         gene_lengths_override,
                     )
 
@@ -946,18 +987,19 @@ def _run_vcf_command(args):
                 ),
             }
 
-            if args.search_pokay:
-                pokay_name = args.name if args.name else "sample"
-                pokay_full = os.path.join(
-                    args.outdir, f"{pokay_name}.pokay_database_hits.full.csv"
+            if args.search_pokay or args.literature_csv is not None:
+                literature_name = args.name if args.name else "sample"
+                literature_full = os.path.join(
+                    args.outdir, f"{literature_name}.literature_database_hits.full.csv"
                 )
-                pokay_concise = os.path.join(
-                    args.outdir, f"{pokay_name}.pokay_database_hits.concise.csv"
+                literature_concise = os.path.join(
+                    args.outdir,
+                    f"{literature_name}.literature_database_hits.concise.csv",
                 )
-                if os.path.exists(pokay_full):
-                    outputs["pokay_hits_full_csv"] = pokay_full
-                if os.path.exists(pokay_concise):
-                    outputs["pokay_hits_concise_csv"] = pokay_concise
+                if os.path.exists(literature_full):
+                    outputs["literature_hits_full_csv"] = literature_full
+                if os.path.exists(literature_concise):
+                    outputs["literature_hits_concise_csv"] = literature_concise
 
             if manifest is not None:
                 manifest.finish(status="success", outputs=outputs)
@@ -1379,9 +1421,23 @@ def _run_generate_command(args):
 
 
 def _run_describe_output_command(args):
+    if args.schema_target == "results":
+        schema = list(get_results_schema())
+        schema_text = render_output_schema_text()
+    else:
+        schema = list(LITERATURE_SCHEMA)
+        header = [
+            "Literature schema",
+            "Expected columns when using `--literature-csv`:",
+            "",
+        ]
+        lines = [
+            f"- {entry['name']}: {entry['description']}" for entry in LITERATURE_SCHEMA
+        ]
+        schema_text = "\n".join(header + lines)
+
     if args.out:
         output_path = Path(args.out).expanduser().resolve()
-        schema = list(get_results_schema())
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if args.format == "json":
             output_path.write_text(
@@ -1398,7 +1454,7 @@ def _run_describe_output_command(args):
         print(f"Wrote schema to {output_path}")
         return 0
 
-    print(render_output_schema_text())
+    print(schema_text)
     return 0
 
 
@@ -1409,7 +1465,7 @@ def _process_files(
     sample_names,
     covs,
     input_file,
-    pokay,
+    literature,
     gene_lengths,
 ):
     """Process files in the given temporary directory."""
@@ -1417,14 +1473,14 @@ def _process_files(
 
     cli_command = getattr(args, "_invocation", None)
 
-    pokay_df = pokay
+    literature_df = literature
 
-    if args.search_pokay and pokay_df is None and args.download_pokay:
-        download_path = os.path.join(tempdir, "pokay_database.csv")
+    if args.search_pokay and literature_df is None:
+        download_path = os.path.join(tempdir, "literature_database.csv")
         exit_code = parse_pokay_module.main([download_path])
         if exit_code != 0 or not os.path.exists(download_path):
-            raise ProcessingError("Failed to download pokay literature database")
-        pokay_df = pd.read_csv(download_path)
+            raise ProcessingError("Failed to download literature database")
+        literature_df = pd.read_csv(download_path)
 
     skip_heavy_processing = (
         getattr(args, "test", False)
@@ -1496,16 +1552,22 @@ def _process_files(
     else:
         table = pd.read_csv(outfile, keep_default_na=False)
 
-    pokay_hits_df = None
-    pokay_full_csv_path = None
-    if args.search_pokay and pokay_df is not None:
+    literature_hits_df = None
+    literature_full_csv_path = None
+    if (
+        args.search_pokay or args.literature_csv is not None
+    ) and literature_df is not None:
         new_mutations_subset = table[table["variant_status"] == "new"]
-        pokay_name = args.name if args.name else "sample"
-        pokay_hits_df = search_pokay(
-            new_mutations_subset, pokay_df, args.outdir, pokay_name, args.debug
+        literature_name = args.name if args.name else "sample"
+        literature_hits_df = search_literature(
+            new_mutations_subset,
+            literature_df,
+            args.outdir,
+            literature_name,
+            args.debug,
         )
-        pokay_full_csv_path = os.path.join(
-            args.outdir, f"{pokay_name}.pokay_database_hits.full.csv"
+        literature_full_csv_path = os.path.join(
+            args.outdir, f"{literature_name}.literature_database_hits.full.csv"
         )
 
     # Generate plots and analysis
@@ -1528,8 +1590,8 @@ def _process_files(
         args.min_snv_freq,
         args.min_indel_freq,
         gene_lengths=gene_lengths,
-        pokay_hits=pokay_hits_df,
-        pokay_table_path=pokay_full_csv_path,
+        literature_hits=literature_hits_df,
+        literature_table_path=literature_full_csv_path,
         cli_command=cli_command,
     )
 

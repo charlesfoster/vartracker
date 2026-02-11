@@ -74,9 +74,7 @@ def test_prepare_reference_bundle_merges_outputs(tmp_path):
     lines = gff_path.read_text(encoding="utf-8").splitlines()
     assert sum(1 for x in lines if x.startswith("##gff-version 3")) == 1
     seqids = {
-        line.split("\t")[0]
-        for line in lines
-        if line and not line.startswith("#")
+        line.split("\t")[0] for line in lines if line and not line.startswith("#")
     }
     assert seqids == {"ACC1", "ACC2"}
     fasta_ids = [record.id for record in SeqIO.parse(str(fasta_path), "fasta")]
@@ -168,4 +166,3 @@ def test_prepare_reference_end_to_end_with_mocked_download(tmp_path, monkeypatch
     assert Path(outputs["gff3"]).exists()
     assert Path(outputs["fai"]).exists()
     assert Path(outputs["metadata"]).exists()
-
