@@ -1,5 +1,5 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![PyPI version](https://badge.fury.io/py/vartracker.svg)](https://badge.fury.io/py/vartracker)
+[![PyPI version](https://img.shields.io/pypi/v/vartracker.svg)](https://pypi.org/project/vartracker/)
 
 ```
 ██    ██  █████  ██████  ████████ ██████   █████   ██████ ██   ██ ███████ ██████
@@ -33,7 +33,7 @@ A bioinformatics pipeline to summarise variants called against a reference in a 
 - Track mutation persistence across longitudinal samples
 - Comprehensive variant analysis including amino acid consequences
 - Built-in SARS-CoV-2 reference data and annotations
-- Integration with functional mutation databases (pokay)
+- Integration with functional mutation databases (literature)
 - Automated plotting and statistical analysis
 - Support for both SNPs and indels
 - Quality control metrics for variants
@@ -148,7 +148,8 @@ Docker is a self-contained reproducible option. If you publish the image, record
 set it when running to include it in the run manifest:
 
 ```bash
-export VARTRACKER_CONTAINER_IMAGE=ghcr.io/your-org/vartracker:2.0.0
+export
+.1.0
 export VARTRACKER_CONTAINER_DIGEST=sha256:...
 ```
 
@@ -185,7 +186,10 @@ vartracker end-to-end path/to/read_inputs.csv \
   --outdir results/e2e_summary
 
 # Generate a template spreadsheet for a directory of files
-vartracker generate --mode e2e --dir data/passaging --out inputs.csv
+vartracker prepare spreadsheet --mode e2e --dir data/passaging --out inputs.csv
+
+# Build a reference FASTA+GFF3 bundle from GenBank accessions
+vartracker prepare reference --accessions CY114381,CY114382 --outdir refs/flu --prefix flu_ref
 
 # Exercise the bundled smoke-test dataset
 vartracker vcf --test
@@ -214,7 +218,7 @@ Mode-specific expectations:
 - **End-to-end mode** requires `reads1` (and optionally `reads2`); remaining fields are generated.
 
 Relative paths are resolved with respect to the CSV location, so you can store the sheet alongside
-your sequencing artefacts. The `generate` subcommand can scaffold a CSV and highlight missing files.
+your sequencing artefacts. The `prepare spreadsheet` subcommand can scaffold a CSV and highlight missing files.
 
 Coverage files can be produced with `samtools depth -aa sample.bam > sample_depth.txt` or
 `bedtools genomecov -ibam sample.bam -d`. The file name suffix does not matter; vartracker checks
@@ -223,47 +227,48 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 ### Mode-specific options
 
 - `vartracker vcf` – accepts plotting and filtering options such as `--min-snv-freq`, `--min-indel-freq`,
-  `--allele-frequency-tag`, `--name`, `--outdir`, `--passage-cap`, `--manifest-level`, and pokay controls
-  (`--search-pokay`, `--pokay-csv`, `--download-pokay`). Use `--test` to run the bundled smoke test.
+  `--allele-frequency-tag`, `--name`, `--outdir`, `--passage-cap`, `--manifest-level`, and literature controls
+  (`--search-pokay`, `--literature-csv`). Use `--test` to run the bundled smoke test.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
-  `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`.
+  `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
 - `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
-- `vartracker generate` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
+- `vartracker prepare spreadsheet` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
   and `--dry-run` to preview without writing a file.
+- `vartracker prepare reference` – build a merged FASTA/GFF3 bundle from GenBank nucleotide accessions.
+  Use `--accessions` or `--accession-file`, plus `--outdir`. Optional flags: `--prefix`, `--force`,
+  `--keep-intermediates`, `--skip-csq-validation`.
 
-### Using with pokay Database
+### Using Literature Database
 
 To search mutations against functional databases:
 
-1. **Set up pokay database (optional):**
+1. **Set up a literature database (optional):**
 ```bash
 parse_pokay pokay_database.csv
 ```
    This command automatically downloads the required literature files from the
    pokay repository into `pokay_literature/NC_045512` (override with
-   `--download-dir`) and writes the processed CSV for downstream analysis. You
-   can also let `vartracker` download and parse the database on demand with the
-   `--download-pokay` flag.
+   `--download-dir`) and writes the processed CSV for downstream analysis.
 
-2. **Run vartracker with pokay search:**
+2. **Run vartracker with literature search:**
 ```bash
-vartracker input_data.csv --search-pokay --pokay-csv pokay_database.csv -o results/
+vartracker [mode] input_data.csv --literature-csv pokay_database.csv -o results/
 ```
-   Alternatively, omit `--pokay-csv` and pass `--download-pokay` to fetch the
-   database automatically during execution.
+   Alternatively, pass `--search-pokay` to automatically download and search
+   against the Pokay SARS-CoV-2 literature database.
 
 ### Command Line Reference
 
 ```
-usage: main.py [-h] [-V] {vcf,bam,end-to-end,e2e,generate,describe-output} ...
+usage: main.py [-h] [-V] {vcf,bam,end-to-end,e2e,prepare,schema} ...
 
 positional arguments:
-  {vcf,bam,end-to-end,e2e,generate}
+  {vcf,bam,end-to-end,e2e,prepare,schema}
     vcf                 Analyse VCF inputs
     bam                 Run the BAM preprocessing workflow
     end-to-end (e2e)    Run the end-to-end workflow (Snakemake + vartracker)
-    generate            Generate input spreadsheets from an existing directory of files
-    describe-output     Print the output schema for results tables
+    prepare             Prepare inputs and references for vartracker
+    schema              Print schemas for results tables or literature CSV input
 
 options:
   -h, --help            show this help message and exit
@@ -271,6 +276,48 @@ options:
 ```
 
 Use `vartracker <subcommand> --help` to inspect the full list of mode-specific arguments.
+
+### Prepare reference from accessions
+
+Use this workflow to build a `bcftools csq`-ready reference bundle from nucleotide accessions:
+
+```bash
+# Comma-separated accessions
+# Example with influenza A segments
+vartracker prepare reference \
+  --accessions CY114381,CY114382,CY114383,CY114384,CY114385,CY114386,CY114387,CY114388 \
+  --outdir refs/influenza_a \
+  --prefix influenza_a_ref
+
+# One accession per line in a file
+vartracker prepare reference \
+  --accession-file accessions.txt \
+  --outdir refs/
+```
+
+Required external tools:
+
+- `bcftools` for csq smoke validation
+
+Outputs:
+
+- `<outdir>/<prefix>.fa`
+- `<outdir>/<prefix>.gff3`
+- `<outdir>/<prefix>.fa.fai`
+- `<outdir>/prepare_metadata.json`
+
+Validation notes:
+
+- Unless `--skip-csq-validation` is supplied, vartracker writes a dummy coding-region VCF variant
+  and runs `bcftools csq` against the generated FASTA/GFF3.
+- Validation fails fast if `bcftools csq` exits non-zero or if the output VCF does not contain `BCSQ`.
+
+Troubleshooting:
+
+- Accession fetch failures: verify accession spelling and network access to NCBI efetch.
+- SeqID mismatch errors: confirm FASTA headers and GFF3 seqids match exactly.
+- csq validation failure: inspect the stderr snippet in the error output and confirm `bcftools`
+  version and annotation structure.
 
 ### Installation Test
 
@@ -296,9 +343,9 @@ vartracker produces several output files:
 - **persistent_new_mutations.csv**: New mutations that persist to the final sample
 - **cumulative_mutations.pdf**: Plot showing mutation accumulation over time
 - **mutations_per_gene.pdf**: Gene-wise mutation statistics
-- **variant_allele_frequency_heatmap.html**: Interactive heatmap with optional pokay annotations
+- **variant_allele_frequency_heatmap.html**: Interactive heatmap with optional literature annotations
 - **variant_allele_frequency_heatmap.pdf**: Heatmap of variant allele frequencies across passages
-- **pokay_database_hits.*.csv**: Functional annotation results (if pokay used)
+- **literature_database_hits.*.csv**: Functional annotation results (if literature search used)
 - **run_metadata.json**: Provenance manifest capturing inputs, tool versions, and run status
 
 By default the manifest is lightweight. Use `--manifest-level deep` to checksum all referenced
@@ -309,14 +356,20 @@ input files (FASTQ/BAM/VCF/coverage) and include file sizes.
 The results table schema is documented in `docs/OUTPUT_SCHEMA.md`. You can also print it from the CLI:
 
 ```bash
-vartracker describe-output
+vartracker schema results
 ```
 
 To write the schema to a file instead, use:
 
 ```bash
-vartracker describe-output --out docs/output_schema.csv
-vartracker describe-output --out docs/output_schema.json --format json
+vartracker schema results --out docs/output_schema.csv
+vartracker schema results --out docs/output_schema.json --format json
+```
+
+To print the expected literature CSV structure for `--literature-csv`, use:
+
+```bash
+vartracker schema literature
 ```
 
 ## What does vartracker do?
@@ -342,9 +395,11 @@ The pipeline performs the following analysis:
 When using vartracker, please cite the software release you used. Citation metadata is provided
 in `CITATION.cff`, and GitHub releases are archived on Zenodo (DOI will appear here once minted).
 
-Suggested software citation (replace the DOI/version with your release):
+If you use vartracker, please cite the software record on Zenodo:
 
-- Foster, C. (2026). vartracker (Version 2.0.0). Zenodo. DOI: 10.5281/zenodo.XXXXXXX
+- Foster, C. (2026). *vartracker* (Version x.y.z). Zenodo. https://doi.org/10.5281/zenodo.XXXXX
+- Concept DOI (all versions): https://doi.org/10.5281/zenodo.18452274
+Note: a version-specific DOI is minted by Zenodo after each GitHub release.
 
 Also cite relevant methods or data sources, for example:
 

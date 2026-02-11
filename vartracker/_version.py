@@ -9,7 +9,7 @@ except ImportError:  # pragma: no cover -- fallback for very old Pythons
 
 # NOTE: When bumping the project version remember to update this fallback value
 # alongside the version declared in pyproject.toml.
-_FALLBACK_VERSION = "2.0.0"
+_FALLBACK_VERSION = "2.1.0"
 
 try:
     __version__ = metadata.version("vartracker")

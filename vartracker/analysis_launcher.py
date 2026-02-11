@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Launch the Snakemake workflow via the Snakemake v8 Python API."""
+"""Launch the Snakemake workflow via the Snakemake Python API."""
 
 from __future__ import annotations
 
 import sys
+import io
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Optional
 
@@ -15,7 +17,7 @@ from snakemake.api import (
     ExecutionSettings,
     OutputSettings,
 )
-from snakemake.settings.enums import Quietness
+from snakemake.settings.enums import PrintDag, Quietness
 
 
 def _normalise_path(value: str | Path) -> str:
@@ -32,17 +34,21 @@ def run_workflow(
     force_all: bool = False,
     quiet: bool = True,
     mode: str = "reads",
+    rulegraph_path: Optional[str | Path] = None,
 ) -> Optional[str]:
     """Run the lofreq variant calling workflow via the Snakemake API.
 
     Returns the path to the updated sample CSV when the workflow runs, or
-    ``None`` if a dry run was requested.
+    ``None`` if a dry run or rulegraph-only request was made.
     """
 
     samples_csv = _normalise_path(samples_csv)
     reference = _normalise_path(reference)
     outdir = _normalise_path(outdir)
     primer_bed_path = _normalise_path(primer_bed) if primer_bed else None
+    rulegraph_path = _normalise_path(rulegraph_path) if rulegraph_path else None
+    if rulegraph_path and not rulegraph_path.lower().endswith(".dot"):
+        rulegraph_path = f"{rulegraph_path}.dot"
 
     # Validate inputs
     if not Path(samples_csv).exists():
@@ -70,11 +76,14 @@ def run_workflow(
 
     workdir = snakefile.parent
 
-    # Snakemake v8 expects an *iterable* of Quietness enums (or None),
+    # Snakemake expects an iterable of Quietness enums (or None),
     # not a bare bool. Convert our boolean to the canonical set.
     quiet_setting = frozenset({Quietness.ALL}) if quiet else None
 
-    print("Deploying analysis with snakemake...")
+    if rulegraph_path:
+        print("Rendering Snakemake rulegraph...")
+    else:
+        print("Deploying analysis with snakemake...")
 
     try:
         with SnakemakeApi(
@@ -91,7 +100,20 @@ def run_workflow(
                 workdir=workdir,
             )
 
-            dag = workflow.dag(DAGSettings(forceall=force_all))
+            dag = workflow.dag(
+                DAGSettings(forceall=force_all, print_dag_as=str(PrintDag.DOT))
+            )
+
+            if rulegraph_path:
+                output_buffer = io.StringIO()
+                with redirect_stdout(output_buffer):
+                    dag.printrulegraph()
+                Path(rulegraph_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(rulegraph_path).write_text(
+                    output_buffer.getvalue(), encoding="utf-8"
+                )
+                print(f"✓ Rulegraph written to: {rulegraph_path}")
+                return None
 
             executor = "dryrun" if dryrun else "local"
             execution_settings = ExecutionSettings()

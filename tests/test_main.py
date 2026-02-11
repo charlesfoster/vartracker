@@ -30,6 +30,46 @@ def test_setup_default_paths_preserves_explicit_values():
     assert updated.gff3 == "/tmp/custom.gff3"
 
 
+def test_prepare_reference_command_invokes_bundle(monkeypatch, tmp_path):
+    recorded = {}
+
+    def fake_parse_accessions(**kwargs):
+        recorded["parse_kwargs"] = kwargs
+        return ["CY114381"]
+
+    def fake_prepare_reference_bundle(**kwargs):
+        recorded["bundle_kwargs"] = kwargs
+        return {
+            "outputs": {
+                "fasta": str(tmp_path / "reference.fa"),
+                "gff3": str(tmp_path / "reference.gff3"),
+                "fai": str(tmp_path / "reference.fa.fai"),
+                "metadata": str(tmp_path / "prepare_metadata.json"),
+            }
+        }
+
+    monkeypatch.setattr(main_module, "parse_accessions", fake_parse_accessions)
+    monkeypatch.setattr(
+        main_module, "prepare_reference_bundle", fake_prepare_reference_bundle
+    )
+
+    exit_code = main_module.main(
+        [
+            "prepare",
+            "reference",
+            "--accessions",
+            "CY114381",
+            "--outdir",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["parse_kwargs"]["accessions"] == "CY114381"
+    assert recorded["bundle_kwargs"]["accessions"] == ["CY114381"]
+    assert recorded["bundle_kwargs"]["outdir"] == str(tmp_path)
+
+
 @mock.patch.object(
     main_module, "check_dependencies", return_value={"bcftools": True, "tabix": True}
 )
@@ -103,7 +143,7 @@ def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
         main_module, "generate_gene_table", lambda table, *_a, **_k: table
     )
     monkeypatch.setattr(main_module, "plot_gene_table", lambda *a, **k: None)
-    monkeypatch.setattr(main_module, "search_pokay", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "search_literature", lambda *a, **k: None)
 
     formatted_csq = tmp_path / "formatted.csq.vcf.gz"
     monkeypatch.setattr(
@@ -443,8 +483,8 @@ def test_bam_test_mode_uses_demo_dataset(monkeypatch, tmp_path):
     mock_csv = tmp_path / "demo.csv"
     mock_bam = tmp_path / "demo.bam"
     mock_bam.write_text("", encoding="utf-8")
-    mock_pokay = tmp_path / "mock.csv"
-    mock_pokay.write_text("", encoding="utf-8")
+    mock_literature = tmp_path / "mock.csv"
+    mock_literature.write_text("", encoding="utf-8")
     mock_csv.write_text(
         "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
         f"Demo,0,,,{mock_bam},,\n",
@@ -463,9 +503,8 @@ def test_bam_test_mode_uses_demo_dataset(monkeypatch, tmp_path):
 
     def fake_prepare(args, mode):
         recorded["prepare_mode"] = mode
-        args.search_pokay = True
-        args.download_pokay = False
-        args.pokay_csv = str(mock_pokay)
+        args.search_pokay = False
+        args.literature_csv = str(mock_literature)
         args._test_data_dir = str(tmp_path)
         if args.name is None:
             args.name = "demo"
@@ -526,8 +565,8 @@ def test_e2e_test_mode_uses_demo_dataset(monkeypatch, tmp_path):
     mock_r2 = tmp_path / "reads_2.fq"
     mock_r1.write_text("", encoding="utf-8")
     mock_r2.write_text("", encoding="utf-8")
-    mock_pokay = tmp_path / "mock.csv"
-    mock_pokay.write_text("", encoding="utf-8")
+    mock_literature = tmp_path / "mock.csv"
+    mock_literature.write_text("", encoding="utf-8")
     mock_csv.write_text(
         "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
         f"Demo,0,{mock_r1},{mock_r2},,,\n",
@@ -546,9 +585,8 @@ def test_e2e_test_mode_uses_demo_dataset(monkeypatch, tmp_path):
 
     def fake_prepare(args, mode):
         recorded["prepare_mode"] = mode
-        args.search_pokay = True
-        args.download_pokay = False
-        args.pokay_csv = str(mock_pokay)
+        args.search_pokay = False
+        args.literature_csv = str(mock_literature)
         args._test_data_dir = str(tmp_path)
         if args.name is None:
             args.name = "demo"
