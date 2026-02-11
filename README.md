@@ -394,9 +394,11 @@ The pipeline performs the following analysis:
 When using vartracker, please cite the software release you used. Citation metadata is provided
 in `CITATION.cff`, and GitHub releases are archived on Zenodo (DOI will appear here once minted).
 
-Suggested software citation (replace the DOI/version with your release):
+If you use vartracker, please cite the software record on Zenodo:
 
-- Foster, C. (2026). vartracker (Version 2.0.0). Zenodo. DOI: 10.5281/zenodo.XXXXXXX
+- Foster, C. (2026). *vartracker* (Version x.y.z). Zenodo. https://doi.org/10.5281/zenodo.XXXXX
+- Concept DOI (all versions): https://doi.org/10.5281/zenodo.18452274
+Note: a version-specific DOI is minted by Zenodo after each GitHub release.
 
 Also cite relevant methods or data sources, for example:
 
