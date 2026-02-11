@@ -27,16 +27,14 @@ def test_cli_version_option():
 
 
 def test_cli_describe_output():
-    exit_code, out = _run_main("describe-output")
+    exit_code, out = _run_main("schema")
     assert exit_code == 0
     assert "Output schema" in out
 
 
 def test_cli_describe_output_writes_json(tmp_path):
     output_path = tmp_path / "schema.json"
-    exit_code, out = _run_main(
-        "describe-output", "--out", str(output_path), "--format", "json"
-    )
+    exit_code, out = _run_main("schema", "--out", str(output_path), "--format", "json")
     assert exit_code == 0
     assert output_path.exists()
     payload = json.loads(output_path.read_text(encoding="utf-8"))

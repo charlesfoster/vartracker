@@ -471,6 +471,11 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
         default=False,
     )
     snk_group.add_argument(
+        "--rulegraph",
+        default=None,
+        help="Write the Snakemake rulegraph to a DOT file and exit",
+    )
+    snk_group.add_argument(
         "--verbose",
         action="store_true",
         help="Print Snakemake shell commands during execution",
@@ -486,10 +491,10 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
     bam_parser.set_defaults(handler=_run_bam_command, _subparser=bam_parser)
 
 
-def _add_generate_subparser(subparsers):
+def _add_spreadsheet_subparser(subparsers):
     description = "Generate template CSV files for vartracker input."
     gen_parser = subparsers.add_parser(
-        "generate",
+        "spreadsheet",
         help="Generate input spreadsheets from an existing directory of files",
         description=description,
         formatter_class=FlexiFormatter,
@@ -520,13 +525,33 @@ def _add_generate_subparser(subparsers):
     gen_parser.set_defaults(handler=_run_generate_command)
 
 
+def _run_prep_command(args):
+    if getattr(args, "handler", None) is None or args.command == "prep":
+        args._subparser.print_help()
+        return 1
+    return args.handler(args)
+
+
+def _add_prep_subparser(subparsers):
+    description = "Prepare inputs and templates for vartracker workflows."
+    prep_parser = subparsers.add_parser(
+        "prep",
+        help="Prepare inputs for vartracker",
+        description=description,
+        formatter_class=FlexiFormatter,
+    )
+    prep_subparsers = prep_parser.add_subparsers(dest="prep_command")
+    _add_spreadsheet_subparser(prep_subparsers)
+    prep_parser.set_defaults(handler=_run_prep_command, _subparser=prep_parser)
+
+
 def _add_schema_subparser(subparsers):
     description = "Describe the output schema for vartracker results."
     schema_parser = subparsers.add_parser(
-        "describe-output",
+        "schema",
         help="Print the output schema for results tables",
         description=description,
-        aliases=["schema"],
+        aliases=["describe-output"],
         formatter_class=FlexiFormatter,
     )
 
@@ -549,7 +574,7 @@ def create_parser():
     """Create and return the top-level argument parser with subcommands."""
 
     parser = argparse.ArgumentParser(
-        description="vartracker: track the persistence (or not) of mutations during long-term passaging",
+        description="vartracker: longitudinal variant tracking and summarisation for pathogen sequencing",
         formatter_class=FlexiFormatter,
     )
     parser.add_argument(
@@ -560,7 +585,7 @@ def create_parser():
     _add_vcf_subparser(subparsers)
     _add_bam_subparser(subparsers)
     _add_e2e_subparser(subparsers)
-    _add_generate_subparser(subparsers)
+    _add_prep_subparser(subparsers)
     _add_schema_subparser(subparsers)
 
     return parser
@@ -591,6 +616,15 @@ def setup_default_paths(args):
     args.gff3 = annotation
 
     return args
+
+
+def _normalise_rulegraph_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    resolved = str(Path(path).expanduser())
+    if not resolved.lower().endswith(".dot"):
+        resolved = f"{resolved}.dot"
+    return str(Path(resolved).resolve())
 
 
 def main(sysargs=None):
@@ -910,6 +944,11 @@ def _add_e2e_subparser(subparsers):
         default=False,
     )
     snk_group.add_argument(
+        "--rulegraph",
+        default=None,
+        help="Write the Snakemake rulegraph to a DOT file and exit",
+    )
+    snk_group.add_argument(
         "--verbose",
         action="store_true",
         help="Print Snakemake shell commands during execution",
@@ -993,6 +1032,14 @@ def _run_e2e_command(args):
 
         print(get_logo())
 
+        rulegraph_path = _normalise_rulegraph_path(args.rulegraph)
+        args.rulegraph = rulegraph_path
+
+        if rulegraph_path and args.snakemake_dryrun:
+            raise InputValidationError(
+                "--rulegraph cannot be combined with --snakemake-dryrun"
+            )
+
         updated_csv = run_e2e_workflow(
             samples_csv=args.samples_csv,
             reference=args.reference,
@@ -1003,7 +1050,16 @@ def _run_e2e_command(args):
             force_all=args.redo,
             quiet=not args.verbose,
             mode="reads",
+            rulegraph_path=rulegraph_path,
         )
+
+        if rulegraph_path:
+            if manifest is not None:
+                manifest.finish(
+                    status="success",
+                    outputs={"snakemake_rulegraph": rulegraph_path},
+                )
+            return 0
 
         if args.snakemake_dryrun:
             if manifest is not None:
@@ -1118,6 +1174,14 @@ def _run_bam_command(args):
 
         print(get_logo())
 
+        rulegraph_path = _normalise_rulegraph_path(args.rulegraph)
+        args.rulegraph = rulegraph_path
+
+        if rulegraph_path and args.snakemake_dryrun:
+            raise InputValidationError(
+                "--rulegraph cannot be combined with --snakemake-dryrun"
+            )
+
         updated_csv = run_e2e_workflow(
             samples_csv=args.input_csv,
             reference=args.reference,
@@ -1128,7 +1192,16 @@ def _run_bam_command(args):
             force_all=args.redo,
             quiet=not args.verbose,
             mode="bam",
+            rulegraph_path=rulegraph_path,
         )
+
+        if rulegraph_path:
+            if manifest is not None:
+                manifest.finish(
+                    status="success",
+                    outputs={"snakemake_rulegraph": rulegraph_path},
+                )
+            return 0
 
         if args.snakemake_dryrun:
             if manifest is not None:

@@ -34,7 +34,7 @@ def process_joint_variants(path):
         pd.DataFrame: Updated DataFrame with joint variant information
     """
     try:
-        tab = pd.read_csv(path)
+        tab = pd.read_csv(path, keep_default_na=False)
     except Exception as e:
         raise RuntimeError(f"Error reading variants file {path}: {str(e)}")
 

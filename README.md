@@ -1,5 +1,5 @@
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![PyPI version](https://badge.fury.io/py/vartracker.svg)](https://badge.fury.io/py/vartracker)
+[![PyPI version](https://img.shields.io/pypi/v/vartracker.svg)](https://pypi.org/project/vartracker/)
 
 ```
 ██    ██  █████  ██████  ████████ ██████   █████   ██████ ██   ██ ███████ ██████
@@ -185,7 +185,7 @@ vartracker end-to-end path/to/read_inputs.csv \
   --outdir results/e2e_summary
 
 # Generate a template spreadsheet for a directory of files
-vartracker generate --mode e2e --dir data/passaging --out inputs.csv
+vartracker prep spreadsheet --mode e2e --dir data/passaging --out inputs.csv
 
 # Exercise the bundled smoke-test dataset
 vartracker vcf --test
@@ -214,7 +214,7 @@ Mode-specific expectations:
 - **End-to-end mode** requires `reads1` (and optionally `reads2`); remaining fields are generated.
 
 Relative paths are resolved with respect to the CSV location, so you can store the sheet alongside
-your sequencing artefacts. The `generate` subcommand can scaffold a CSV and highlight missing files.
+your sequencing artefacts. The `prep spreadsheet` subcommand can scaffold a CSV and highlight missing files.
 
 Coverage files can be produced with `samtools depth -aa sample.bam > sample_depth.txt` or
 `bedtools genomecov -ibam sample.bam -d`. The file name suffix does not matter; vartracker checks
@@ -226,9 +226,9 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
   `--allele-frequency-tag`, `--name`, `--outdir`, `--passage-cap`, `--manifest-level`, and pokay controls
   (`--search-pokay`, `--pokay-csv`, `--download-pokay`). Use `--test` to run the bundled smoke test.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
-  `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`.
+  `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
 - `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
-- `vartracker generate` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
+- `vartracker prep spreadsheet` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
   and `--dry-run` to preview without writing a file.
 
 ### Using with pokay Database
@@ -255,15 +255,15 @@ vartracker input_data.csv --search-pokay --pokay-csv pokay_database.csv -o resul
 ### Command Line Reference
 
 ```
-usage: main.py [-h] [-V] {vcf,bam,end-to-end,e2e,generate,describe-output} ...
+usage: main.py [-h] [-V] {vcf,bam,end-to-end,e2e,prep,schema} ...
 
 positional arguments:
-  {vcf,bam,end-to-end,e2e,generate}
+  {vcf,bam,end-to-end,e2e,prep,schema}
     vcf                 Analyse VCF inputs
     bam                 Run the BAM preprocessing workflow
     end-to-end (e2e)    Run the end-to-end workflow (Snakemake + vartracker)
-    generate            Generate input spreadsheets from an existing directory of files
-    describe-output     Print the output schema for results tables
+    prep                Prepare inputs for vartracker
+    schema              Print the output schema for results tables
 
 options:
   -h, --help            show this help message and exit
@@ -309,14 +309,14 @@ input files (FASTQ/BAM/VCF/coverage) and include file sizes.
 The results table schema is documented in `docs/OUTPUT_SCHEMA.md`. You can also print it from the CLI:
 
 ```bash
-vartracker describe-output
+vartracker schema
 ```
 
 To write the schema to a file instead, use:
 
 ```bash
-vartracker describe-output --out docs/output_schema.csv
-vartracker describe-output --out docs/output_schema.json --format json
+vartracker schema --out docs/output_schema.csv
+vartracker schema --out docs/output_schema.json --format json
 ```
 
 ## What does vartracker do?

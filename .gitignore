@@ -113,6 +113,7 @@ vartracker_test_results/
 vartracker_results/
 vartracker_bam_test_results/
 vartracker_e2e_test_results/
+vartracker/.snakemake/
 
 # Always include bundled demo data used by --test
 !vartracker/test_data/
