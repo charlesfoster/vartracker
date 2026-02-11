@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "vartracker"
-version: "2.0.0"
-date-released: "2026-01-30"
+version: "2.1.0"
+date-released: "2026-02-11"
 license: MIT
 repository-code: "https://github.com/charlesfoster/vartracker"
 url: "https://github.com/charlesfoster/vartracker"
@@ -22,7 +22,7 @@ preferred-citation:
     - family-names: Foster
       given-names: Charles
   title: "vartracker"
-  version: "2.0.0"
+  version: "2.1.0"
   doi: "10.5281/zenodo.XXXXXXX"
   url: "https://github.com/charlesfoster/vartracker"
-  date-released: "2026-01-30"
+  date-released: "2026-02-11"
