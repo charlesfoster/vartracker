@@ -5,7 +5,7 @@ The recommended micromamba environment pins the same versions for reproducibilit
 
 | Tool | Minimum tested version | Pinned in environment.yml | Notes |
 | --- | --- | --- | --- |
-| bcftools | 1.21 | 1.21 | Required for all modes. |
+| bcftools | 1.21 | 1.21 | Required for all modes and `prepare reference` csq validation. |
 | tabix | 1.21 | 1.21 (via htslib) | Provided by htslib; required for all modes. |
 | samtools | 1.21 | 1.21 | Required for `bam` and `end-to-end` modes. |
 | lofreq | 2.1.5 | 2.1.5 | Variant caller used in Snakemake workflow. |
@@ -16,3 +16,6 @@ The recommended micromamba environment pins the same versions for reproducibilit
 
 If you validate compatibility with older tool versions, update the minimum tested version here and
 consider expanding CI coverage.
+
+Python package dependencies are declared in `pyproject.toml` (including `biopython` for
+GenBank-to-GFF3/FASTA conversion in `prepare reference`).

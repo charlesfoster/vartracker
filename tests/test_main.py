@@ -30,6 +30,46 @@ def test_setup_default_paths_preserves_explicit_values():
     assert updated.gff3 == "/tmp/custom.gff3"
 
 
+def test_prepare_reference_command_invokes_bundle(monkeypatch, tmp_path):
+    recorded = {}
+
+    def fake_parse_accessions(**kwargs):
+        recorded["parse_kwargs"] = kwargs
+        return ["CY114381"]
+
+    def fake_prepare_reference_bundle(**kwargs):
+        recorded["bundle_kwargs"] = kwargs
+        return {
+            "outputs": {
+                "fasta": str(tmp_path / "reference.fa"),
+                "gff3": str(tmp_path / "reference.gff3"),
+                "fai": str(tmp_path / "reference.fa.fai"),
+                "metadata": str(tmp_path / "prepare_metadata.json"),
+            }
+        }
+
+    monkeypatch.setattr(main_module, "parse_accessions", fake_parse_accessions)
+    monkeypatch.setattr(
+        main_module, "prepare_reference_bundle", fake_prepare_reference_bundle
+    )
+
+    exit_code = main_module.main(
+        [
+            "prepare",
+            "reference",
+            "--accessions",
+            "CY114381",
+            "--outdir",
+            str(tmp_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["parse_kwargs"]["accessions"] == "CY114381"
+    assert recorded["bundle_kwargs"]["accessions"] == ["CY114381"]
+    assert recorded["bundle_kwargs"]["outdir"] == str(tmp_path)
+
+
 @mock.patch.object(
     main_module, "check_dependencies", return_value={"bcftools": True, "tabix": True}
 )

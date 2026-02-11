@@ -13,3 +13,4 @@ dependencies:
   - bwa=0.7.17
   - lofreq=2.1.5
   - pip
+  - biopython=1.83

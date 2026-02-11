@@ -47,3 +47,31 @@ def test_cli_missing_arguments_prints_help():
     exit_code, out = _run_main()
     assert exit_code == 1
     assert "usage" in out.lower()
+
+
+def test_prepare_reference_requires_accessions_source(tmp_path):
+    exit_code, out = _run_main(
+        "prepare",
+        "reference",
+        "--outdir",
+        str(tmp_path),
+    )
+    assert exit_code != 0
+    assert "one of the arguments --accessions --accession-file is required" in out
+
+
+def test_prepare_reference_rejects_both_accession_inputs(tmp_path):
+    accessions_file = tmp_path / "accessions.txt"
+    accessions_file.write_text("CY114381\n", encoding="utf-8")
+    exit_code, out = _run_main(
+        "prepare",
+        "reference",
+        "--outdir",
+        str(tmp_path),
+        "--accessions",
+        "CY114381",
+        "--accession-file",
+        str(accessions_file),
+    )
+    assert exit_code != 0
+    assert "not allowed with argument" in out

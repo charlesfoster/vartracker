@@ -58,6 +58,7 @@ from .annotation_processing import (
     gene_lengths_from_gff3,
     validate_reference_and_annotation,
 )
+from .reference_prepare import parse_accessions, prepare_reference_bundle
 
 _RED = "\033[91m"
 _YELLOW = "\033[93m"
@@ -525,24 +526,105 @@ def _add_spreadsheet_subparser(subparsers):
     gen_parser.set_defaults(handler=_run_generate_command)
 
 
-def _run_prep_command(args):
-    if getattr(args, "handler", None) is None or args.command == "prep":
+def _add_prepare_reference_subparser(subparsers):
+    description = (
+        "Build a bcftools-csq-compatible reference bundle from GenBank accessions."
+    )
+    parser = subparsers.add_parser(
+        "reference",
+        help="Prepare FASTA/GFF3 reference files from GenBank accessions",
+        description=description,
+        formatter_class=FlexiFormatter,
+    )
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--accessions",
+        help="Comma-separated GenBank nucleotide accession list",
+    )
+    group.add_argument(
+        "--accession-file",
+        help="Path to file with one GenBank accession per line",
+    )
+    parser.add_argument(
+        "--outdir",
+        required=True,
+        help="Output directory for generated reference files",
+    )
+    parser.add_argument(
+        "--prefix",
+        default="reference",
+        help="Output file prefix (default: reference)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing outputs in --outdir",
+        default=False,
+    )
+    parser.add_argument(
+        "--keep-intermediates",
+        action="store_true",
+        help="Keep per-accession GenBank/FASTA/GFF3 intermediate files",
+        default=False,
+    )
+    parser.add_argument(
+        "--skip-csq-validation",
+        action="store_true",
+        help="Skip the bcftools csq smoke test validation",
+        default=False,
+    )
+    parser.set_defaults(handler=_run_prepare_reference_command)
+
+
+def _run_prepare_command(args):
+    if getattr(args, "handler", None) is None or args.command in {"prep", "prepare"}:
         args._subparser.print_help()
         return 1
     return args.handler(args)
 
 
+def _run_prepare_reference_command(args):
+    try:
+        accession_list = parse_accessions(
+            accessions=args.accessions,
+            accession_file=args.accession_file,
+        )
+        metadata = prepare_reference_bundle(
+            accessions=accession_list,
+            outdir=args.outdir,
+            prefix=args.prefix,
+            force=args.force,
+            keep_intermediates=args.keep_intermediates,
+            skip_csq_validation=args.skip_csq_validation,
+            invocation=getattr(args, "_invocation", None),
+            argv=getattr(args, "_argv", None),
+        )
+    except Exception as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+    outputs = metadata.get("outputs", {})
+    print("Reference bundle prepared successfully.")
+    print(f"FASTA: {outputs.get('fasta')}")
+    print(f"GFF3: {outputs.get('gff3')}")
+    print(f"FASTA index: {outputs.get('fai')}")
+    print(f"Metadata: {outputs.get('metadata')}")
+    return 0
+
+
 def _add_prep_subparser(subparsers):
     description = "Prepare inputs and templates for vartracker workflows."
     prep_parser = subparsers.add_parser(
-        "prep",
+        "prepare",
         help="Prepare inputs for vartracker",
         description=description,
+        aliases=["prep"],
         formatter_class=FlexiFormatter,
     )
     prep_subparsers = prep_parser.add_subparsers(dest="prep_command")
     _add_spreadsheet_subparser(prep_subparsers)
-    prep_parser.set_defaults(handler=_run_prep_command, _subparser=prep_parser)
+    _add_prepare_reference_subparser(prep_subparsers)
+    prep_parser.set_defaults(handler=_run_prepare_command, _subparser=prep_parser)
 
 
 def _add_schema_subparser(subparsers):

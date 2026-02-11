@@ -185,7 +185,10 @@ vartracker end-to-end path/to/read_inputs.csv \
   --outdir results/e2e_summary
 
 # Generate a template spreadsheet for a directory of files
-vartracker prep spreadsheet --mode e2e --dir data/passaging --out inputs.csv
+vartracker prepare spreadsheet --mode e2e --dir data/passaging --out inputs.csv
+
+# Build a reference FASTA+GFF3 bundle from GenBank accessions
+vartracker prepare reference --accessions CY114381,CY114382 --outdir refs/flu --prefix flu_ref
 
 # Exercise the bundled smoke-test dataset
 vartracker vcf --test
@@ -214,7 +217,7 @@ Mode-specific expectations:
 - **End-to-end mode** requires `reads1` (and optionally `reads2`); remaining fields are generated.
 
 Relative paths are resolved with respect to the CSV location, so you can store the sheet alongside
-your sequencing artefacts. The `prep spreadsheet` subcommand can scaffold a CSV and highlight missing files.
+your sequencing artefacts. The `prepare spreadsheet` subcommand can scaffold a CSV and highlight missing files.
 
 Coverage files can be produced with `samtools depth -aa sample.bam > sample_depth.txt` or
 `bedtools genomecov -ibam sample.bam -d`. The file name suffix does not matter; vartracker checks
@@ -228,8 +231,11 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
   `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
 - `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
-- `vartracker prep spreadsheet` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
+- `vartracker prepare spreadsheet` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
   and `--dry-run` to preview without writing a file.
+- `vartracker prepare reference` – build a merged FASTA/GFF3 bundle from GenBank nucleotide accessions.
+  Use `--accessions` or `--accession-file`, plus `--outdir`. Optional flags: `--prefix`, `--force`,
+  `--keep-intermediates`, `--skip-csq-validation`.
 
 ### Using with pokay Database
 
@@ -255,14 +261,14 @@ vartracker input_data.csv --search-pokay --pokay-csv pokay_database.csv -o resul
 ### Command Line Reference
 
 ```
-usage: main.py [-h] [-V] {vcf,bam,end-to-end,e2e,prep,schema} ...
+usage: main.py [-h] [-V] {vcf,bam,end-to-end,e2e,prepare,schema} ...
 
 positional arguments:
-  {vcf,bam,end-to-end,e2e,prep,schema}
+  {vcf,bam,end-to-end,e2e,prepare,schema}
     vcf                 Analyse VCF inputs
     bam                 Run the BAM preprocessing workflow
     end-to-end (e2e)    Run the end-to-end workflow (Snakemake + vartracker)
-    prep                Prepare inputs for vartracker
+    prepare             Prepare inputs and references for vartracker
     schema              Print the output schema for results tables
 
 options:
@@ -271,6 +277,47 @@ options:
 ```
 
 Use `vartracker <subcommand> --help` to inspect the full list of mode-specific arguments.
+
+### Prepare reference from accessions
+
+Use this workflow to build a `bcftools csq`-ready reference bundle from nucleotide accessions:
+
+```bash
+# Comma-separated accessions
+vartracker prepare reference \
+  --accessions CY114381,CY114382,CY114383 \
+  --outdir refs/flu \
+  --prefix flu_ref
+
+# One accession per line in a file
+vartracker prepare reference \
+  --accession-file accessions.txt \
+  --outdir refs/flu
+```
+
+Required external tools:
+
+- `bcftools` for csq smoke validation
+
+Outputs:
+
+- `<outdir>/<prefix>.fa`
+- `<outdir>/<prefix>.gff3`
+- `<outdir>/<prefix>.fa.fai`
+- `<outdir>/prepare_metadata.json`
+
+Validation notes:
+
+- Unless `--skip-csq-validation` is supplied, vartracker writes a dummy coding-region VCF variant
+  and runs `bcftools csq` against the generated FASTA/GFF3.
+- Validation fails fast if `bcftools csq` exits non-zero or if the output VCF does not contain `BCSQ`.
+
+Troubleshooting:
+
+- Accession fetch failures: verify accession spelling and network access to NCBI efetch.
+- SeqID mismatch errors: confirm FASTA headers and GFF3 seqids match exactly.
+- csq validation failure: inspect the stderr snippet in the error output and confirm `bcftools`
+  version and annotation structure.
 
 ### Installation Test
 
