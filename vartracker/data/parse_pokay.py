@@ -6,6 +6,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -15,7 +16,6 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import pandas as pd
-from urlextract import URLExtract
 
 DEFAULT_DOWNLOAD_SUBDIR = os.path.join("pokay_literature", "NC_045512")
 GITHUB_CONTENTS_URL = (
@@ -34,6 +34,19 @@ PRODUCT_TO_NSP = {
     "2'-O-MT": "nsp16",
 }
 
+URL_PATTERN = re.compile(r"https?://[^\s<>()\]}\"]+")
+
+
+def extract_urls(text: str) -> list[str]:
+    """Return unique HTTP(S) URLs found in free text."""
+    matches = URL_PATTERN.findall(text)
+    cleaned: list[str] = []
+    for match in matches:
+        url = match.rstrip(".,;:!?")
+        if url and url not in cleaned:
+            cleaned.append(url)
+    return cleaned
+
 
 def parse_mut_file(fname: str) -> pd.DataFrame:
     """Split a list into sub lists, depending on a delimiter."""
@@ -48,7 +61,6 @@ def parse_mut_file(fname: str) -> pd.DataFrame:
     gene = PRODUCT_TO_NSP.get(gene, gene)  # Convert to nsp if in mapping
     category = "_".join([x.replace(".txt", "") for x in bname.split("_")[1:]])
     delimiters = ""
-    extractor = URLExtract()
     # 3: get info from the file based on: https://stackoverflow.com/questions/45281189/split-list-into-lists-based-on-a-character-occurring-inside-of-an-element
     results = []
     sublist: List[str] = []
@@ -66,7 +78,7 @@ def parse_mut_file(fname: str) -> pd.DataFrame:
     for r in results:
         mut = r.pop()
         flat = "".join([x.replace("#", "") for x in r])
-        extraction = extractor.find_urls(flat)
+        extraction = extract_urls(flat)
         reference = " ; ".join(extraction) if len(extraction) > 0 else "N/A"
         info = {
             "gene": gene,

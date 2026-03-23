@@ -18,7 +18,6 @@ from importlib import resources
 from pathlib import Path
 
 import pandas as pd
-from argparse_formatter import FlexiFormatter
 
 from .analysis_launcher import run_workflow as run_e2e_workflow
 from .generate import generate_csv
@@ -63,6 +62,7 @@ from .reference_prepare import parse_accessions, prepare_reference_bundle
 _RED = "\033[91m"
 _YELLOW = "\033[93m"
 _RESET = "\033[0m"
+HelpFormatter = argparse.RawDescriptionHelpFormatter
 
 LITERATURE_SCHEMA: list[dict[str, str]] = [
     {
@@ -427,7 +427,7 @@ def _add_vcf_subparser(subparsers):
         "vcf",
         help="Analyse VCF inputs",
         description=description,
-        formatter_class=FlexiFormatter,
+        formatter_class=HelpFormatter,
         epilog="""
 The input CSV file must contain the columns:
 
@@ -471,7 +471,7 @@ def _add_bam_subparser(subparsers):
         "bam",
         help="Run the BAM preprocessing workflow",
         description=description,
-        formatter_class=FlexiFormatter,
+        formatter_class=HelpFormatter,
         epilog="""
 Provide a CSV with columns:
 
@@ -529,7 +529,7 @@ def _add_spreadsheet_subparser(subparsers):
         "spreadsheet",
         help="Generate input spreadsheets from an existing directory of files",
         description=description,
-        formatter_class=FlexiFormatter,
+        formatter_class=HelpFormatter,
     )
 
     gen_parser.add_argument(
@@ -565,7 +565,7 @@ def _add_prepare_reference_subparser(subparsers):
         "reference",
         help="Prepare FASTA/GFF3 reference files from GenBank accessions",
         description=description,
-        formatter_class=FlexiFormatter,
+        formatter_class=HelpFormatter,
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
@@ -650,7 +650,7 @@ def _add_prep_subparser(subparsers):
         help="Prepare inputs for vartracker",
         description=description,
         aliases=["prep"],
-        formatter_class=FlexiFormatter,
+        formatter_class=HelpFormatter,
     )
     prep_subparsers = prep_parser.add_subparsers(dest="prep_command")
     _add_spreadsheet_subparser(prep_subparsers)
@@ -665,7 +665,7 @@ def _add_schema_subparser(subparsers):
         help="Print schemas for results tables or literature CSV input",
         description=description,
         aliases=["describe-output"],
-        formatter_class=FlexiFormatter,
+        formatter_class=HelpFormatter,
     )
     schema_parser.add_argument(
         "schema_target",
@@ -693,7 +693,7 @@ def create_parser():
 
     parser = argparse.ArgumentParser(
         description="vartracker: longitudinal variant tracking and summarisation for pathogen sequencing",
-        formatter_class=FlexiFormatter,
+        formatter_class=HelpFormatter,
     )
     parser.add_argument(
         "-V", "--version", action="version", version=f"%(prog)s {__version__}"
@@ -1033,7 +1033,7 @@ def _add_e2e_subparser(subparsers):
         "end-to-end",
         help="Run the end-to-end workflow (Snakemake + vartracker)",
         description=description,
-        formatter_class=FlexiFormatter,
+        formatter_class=HelpFormatter,
         aliases=["e2e"],
     )
 
