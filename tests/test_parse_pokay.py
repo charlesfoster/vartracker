@@ -138,3 +138,15 @@ Mutation
     assert {"gene", "category", "mutation", "information", "reference"} <= set(
         df.columns
     )
+
+
+def test_extract_urls_strips_trailing_punctuation_and_deduplicates():
+    text = (
+        "See https://example.com/path, https://example.com/path and "
+        "https://example.org/result."
+    )
+
+    assert parse_pokay.extract_urls(text) == [
+        "https://example.com/path",
+        "https://example.org/result",
+    ]

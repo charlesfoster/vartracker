@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vartracker"
-version = "2.1.0"
+version = "2.1.1"
 authors = [
     {name = "Dr Charles Foster"},
 ]
@@ -44,8 +44,6 @@ dependencies = [
     "seaborn>=0.11.0",
     "cyvcf2>=0.30.0",
     "biopython>=1.83,<2",
-    "argparse-formatter>=1.4",
-    "urlextract>=1.9.0",
     "snakemake>=9",
 ]
 
