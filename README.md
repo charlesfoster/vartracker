@@ -217,6 +217,11 @@ vartracker end-to-end --test
 All modes understand `--test`, which copies the example dataset from `vartracker/test_data`
 into a temporary directory, resolves relative paths, and runs the appropriate workflow.
 
+Temporary LoFreq note:
+- In `bam` and `end-to-end` mode, `vartracker` currently caps `lofreq call-parallel` at 8 threads even if `--cores` is higher.
+- This is a temporary workaround for an older Bioconda LoFreq build that can fail during `call-parallel` final filtering when many shards produce an excessively long merged VCF header.
+- The cap will be revisited once an updated LoFreq build is available through Bioconda.
+
 ### Input Spreadsheets
 
 Every CLI mode reads the same canonical columns:
@@ -244,11 +249,18 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 ### Mode-specific options
 
 - `vartracker vcf` – accepts plotting and filtering options such as `--min-snv-freq`, `--min-indel-freq`,
-  `--allele-frequency-tag`, `--name`, `--outdir`, `--passage-cap`, `--manifest-level`, and literature controls
+  `--allele-frequency-tag`, `--heatmap-exclude`, `--name`, `--outdir`, `--passage-cap`, `--manifest-level`, and literature controls
   (`--search-pokay`, `--literature-csv`). Use `--test` to run the bundled smoke test.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
   `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
 - `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
+
+Heatmap filtering:
+- By default, all consequence classes are included in the heatmaps.
+- Use `--heatmap-exclude` with a comma-separated list of `type_of_change` values to omit those consequence classes from the heatmaps.
+- Any listed value is excluded; this is not limited to a fixed set of consequence classes.
+- Shell-style wildcard matching is supported, so patterns such as `*frameshift*` will exclude any matching consequence class.
+- Example: `--heatmap-exclude "synonymous,frameshift,stop_gained"`
 - `vartracker prepare spreadsheet` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
   and `--dry-run` to preview without writing a file.
 - `vartracker prepare reference` – build a merged FASTA/GFF3 bundle from GenBank nucleotide accessions.

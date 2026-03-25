@@ -11,15 +11,6 @@ OUTDIR = config.get("outdir", "results")
 PRIMER_BED = config.get("primer_bed", None)
 MODE = config.get("mode", "reads")
 
-
-def _workflow_log(rule_name):
-    return f"{OUTDIR}/logs/{rule_name}.log"
-
-
-def _sample_log(sample, rule_name):
-    return f"{OUTDIR}/{sample}/logs/{rule_name}.log"
-
-
 def _value_or_blank(sample, key, allow_blank=False):
     value = SAMPLES[sample].get(key)
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -65,7 +56,7 @@ if MODE == "reads":
             pac = REF + ".pac",
             sa = REF + ".sa"
         log:
-            _workflow_log("bwa_index")
+            f"{OUTDIR}/logs/bwa_index.log"
         shell:
             """
             mkdir -p $(dirname {log})
@@ -83,7 +74,7 @@ if MODE == "reads":
             html = temp(f"{OUTDIR}/{{sample}}/fastp.html"),
             json = temp(f"{OUTDIR}/{{sample}}/fastp.json")
         log:
-            lambda w: _sample_log(w.sample, "fastp")
+            f"{OUTDIR}/{{sample}}/logs/fastp.log"
         threads: max(1, int(workflow.cores * 0.5))
         shell:
             """
@@ -127,7 +118,7 @@ if MODE == "reads":
         params:
             rg = lambda w: f"@RG\\tID:{w.sample}\\tSM:{w.sample}\\tPL:ILLUMINA"
         log:
-            lambda w: _sample_log(w.sample, "bwa_mem")
+            f"{OUTDIR}/{{sample}}/logs/bwa_mem.log"
         threads: max(1, workflow.cores)
         shell:
             """
@@ -154,7 +145,7 @@ if MODE == "reads":
         params:
             bed = PRIMER_BED if PRIMER_BED else ""
         log:
-            lambda w: _sample_log(w.sample, "ampliconclip")
+            f"{OUTDIR}/{{sample}}/logs/ampliconclip.log"
         threads: max(1, int(workflow.cores * 0.5))
         run:
             if PRIMER_BED:
@@ -180,7 +171,7 @@ rule lofreq_indelqual:
     output:
         bam = f"{OUTDIR}/{{sample}}/{{sample}}_aligned.indelqual.bam"
     log:
-        lambda w: _sample_log(w.sample, "lofreq_indelqual")
+        f"{OUTDIR}/{{sample}}/logs/lofreq_indelqual.log"
     shell:
         """
         mkdir -p {OUTDIR}/{wildcards.sample}
@@ -195,7 +186,7 @@ rule samtools_depth:
     output:
         depth = f"{OUTDIR}/{{sample}}/{{sample}}_depth.txt"
     log:
-        lambda w: _sample_log(w.sample, "samtools_depth")
+        f"{OUTDIR}/{{sample}}/logs/samtools_depth.log"
     shell:
         """
         mkdir -p $(dirname {log})
@@ -211,8 +202,8 @@ rule lofreq_call:
         vcf = f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz",
         csi = f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz.csi"
     log:
-        lambda w: _sample_log(w.sample, "lofreq_call")
-    threads: max(1, workflow.cores)
+        f"{OUTDIR}/{{sample}}/logs/lofreq_call.log"
+    threads: min(8, max(1, workflow.cores))
     shell:
         """
         mkdir -p $(dirname {log})
@@ -234,12 +225,13 @@ rule update_csv:
         original_csv = config["samples_csv"],
         outdir = OUTDIR
     log:
-        _workflow_log("update_csv")
+        f"{OUTDIR}/logs/update_csv.log"
     run:
         import pandas as pd
         import os
 
-        Path(log[0]).parent.mkdir(parents=True, exist_ok=True)
+        log_path = Path(str(log[0]))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Read original CSV
         df = pd.read_csv(params.original_csv)
@@ -257,7 +249,7 @@ rule update_csv:
 
         # Write updated CSV
         df.to_csv(output.csv, index=False)
-        Path(log[0]).write_text(
+        log_path.write_text(
             f"Updated execution spreadsheet written to {output.csv}\n",
             encoding="utf-8",
         )

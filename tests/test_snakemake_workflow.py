@@ -7,18 +7,17 @@ def test_snakemake_rules_write_logs_under_outdir():
     ).read_text(encoding="utf-8")
 
     assert "/dev/null" not in snakefile
-    assert 'return f"{OUTDIR}/logs/{rule_name}.log"' in snakefile
-    assert 'return f"{OUTDIR}/{sample}/logs/{rule_name}.log"' in snakefile
+    assert "threads: min(8, max(1, workflow.cores))" in snakefile
 
     expected_logs = [
-        'log:\n            _workflow_log("bwa_index")',
-        'lambda w: _sample_log(w.sample, "fastp")',
-        'lambda w: _sample_log(w.sample, "bwa_mem")',
-        'lambda w: _sample_log(w.sample, "ampliconclip")',
-        'lambda w: _sample_log(w.sample, "lofreq_indelqual")',
-        'lambda w: _sample_log(w.sample, "samtools_depth")',
-        'lambda w: _sample_log(w.sample, "lofreq_call")',
-        'log:\n        _workflow_log("update_csv")',
+        'f"{OUTDIR}/logs/bwa_index.log"',
+        'f"{OUTDIR}/{{sample}}/logs/fastp.log"',
+        'f"{OUTDIR}/{{sample}}/logs/bwa_mem.log"',
+        'f"{OUTDIR}/{{sample}}/logs/ampliconclip.log"',
+        'f"{OUTDIR}/{{sample}}/logs/lofreq_indelqual.log"',
+        'f"{OUTDIR}/{{sample}}/logs/samtools_depth.log"',
+        'f"{OUTDIR}/{{sample}}/logs/lofreq_call.log"',
+        'f"{OUTDIR}/logs/update_csv.log"',
     ]
 
     for expected in expected_logs:

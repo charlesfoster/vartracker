@@ -5,6 +5,7 @@ Contains functions for generating plots and analyzing mutation patterns.
 """
 
 import html
+import fnmatch
 import os
 import re
 import string
@@ -21,6 +22,14 @@ from .core import get_logo
 # Global configuration for plotting
 plt.rcdefaults()
 mpl.rcParams["pdf.fonttype"] = 42
+
+
+def _ensure_joint_prefix(change_type: object) -> str:
+    text = str(change_type or "").strip()
+    if not text:
+        return "joint"
+    normalised = re.sub(r"^(joint_)+", "", text)
+    return f"joint_{normalised}" if normalised else "joint"
 
 
 def process_joint_variants(path):
@@ -75,8 +84,12 @@ def process_joint_variants(path):
                 tab.at[i, col] = tab.at[j, col]
 
             # Update type of change for joint variants
-            tab.at[i, "type_of_change"] = "joint_" + tab.at[j, "type_of_change"]
-            tab.at[j, "type_of_change"] = "joint_" + tab.at[j, "type_of_change"]
+            tab.at[i, "type_of_change"] = _ensure_joint_prefix(
+                tab.at[j, "type_of_change"]
+            )
+            tab.at[j, "type_of_change"] = _ensure_joint_prefix(
+                tab.at[j, "type_of_change"]
+            )
 
         except (ValueError, IndexError, KeyError) as e:
             print(f"Warning: Could not process joint variant at index {i}: {str(e)}")
@@ -490,6 +503,7 @@ def _prepare_variant_heatmap_matrix(
     sample_names: Sequence[str],
     min_snv_freq: float,
     min_indel_freq: float,
+    excluded_consequence_types: Sequence[str] | None = None,
     gene_lengths: Dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """Prepare a matrix of allele frequencies for heatmap plotting."""
@@ -519,6 +533,11 @@ def _prepare_variant_heatmap_matrix(
             use_nsps = table["nsp_aa_change"].astype(str).str.contains(":").any()
 
     gene_order_map, _ = _build_gene_order_map(gene_lengths, include_nsps=use_nsps)
+    excluded_patterns = {
+        str(value).strip().lower()
+        for value in (excluded_consequence_types or [])
+        if str(value).strip()
+    }
 
     records: List[Dict[str, Union[str, float, int]]] = []
     seen_labels = set()
@@ -531,6 +550,10 @@ def _prepare_variant_heatmap_matrix(
         gene_label, display_label, base_label = _resolve_variant_labels(row)
 
         if base_label in seen_labels:
+            continue
+
+        change_type = str(getattr(row, "type_of_change", "")).strip().lower()
+        if any(fnmatch.fnmatch(change_type, pattern) for pattern in excluded_patterns):
             continue
 
         variant_type = str(getattr(row, "type_of_variant", "")).lower()
@@ -1068,6 +1091,7 @@ def generate_variant_heatmap(
     project_name: str,
     min_snv_freq: float,
     min_indel_freq: float,
+    excluded_consequence_types: Sequence[str] | None = None,
     gene_lengths: Dict[str, int] | None = None,
     literature_hits: Optional[pd.DataFrame] = None,
     literature_table_path: Optional[str] = None,
@@ -1077,7 +1101,12 @@ def generate_variant_heatmap(
 
     try:
         heatmap_data = _prepare_variant_heatmap_matrix(
-            table, sample_names, min_snv_freq, min_indel_freq, gene_lengths
+            table,
+            sample_names,
+            min_snv_freq,
+            min_indel_freq,
+            excluded_consequence_types,
+            gene_lengths,
         )
         if heatmap_data.empty:
             print("No variant data available for heatmap; skipping plot.")

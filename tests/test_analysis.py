@@ -7,6 +7,7 @@ import pandas as pd
 from vartracker.analysis import (
     search_literature,
     _prepare_variant_heatmap_matrix,
+    process_joint_variants,
     generate_variant_heatmap,
 )
 
@@ -140,6 +141,140 @@ def test_prepare_variant_heatmap_matrix_orders_variants_by_genome():
     assert matrix.loc["nsp2:T809=\n(C1059T)", "P1"] == 0.5
     assert matrix.loc[expected_long_label, "P1"] == 0.8
     assert matrix.loc["S:D215G\n(A22206G)", "P1"] == 1.0
+
+
+def test_prepare_variant_heatmap_matrix_excludes_selected_consequence_types():
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "S",
+                "amino_acid_consequence": "D215G",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "alt_freq": "0.0 / 0.7",
+                "samples": "P0 / P1",
+                "variant": "A22206G",
+                "start": 22206,
+            },
+            {
+                "gene": "S",
+                "amino_acid_consequence": "T716T",
+                "nsp_aa_change": "",
+                "type_of_change": "synonymous",
+                "type_of_variant": "snp",
+                "alt_freq": "0.0 / 0.8",
+                "samples": "P0 / P1",
+                "variant": "C23403T",
+                "start": 23403,
+            },
+            {
+                "gene": "S",
+                "amino_acid_consequence": "145del",
+                "nsp_aa_change": "",
+                "type_of_change": "frameshift",
+                "type_of_variant": "indel",
+                "alt_freq": "0.0 / 0.9",
+                "samples": "P0 / P1",
+                "variant": "A22029-",
+                "start": 22029,
+            },
+        ]
+    )
+
+    matrix = _prepare_variant_heatmap_matrix(
+        table,
+        ["P0", "P1"],
+        0.2,
+        0.2,
+        excluded_consequence_types=["synonymous", "frameshift"],
+    )
+
+    assert list(matrix.index) == ["S:D215G\n(A22206G)"]
+
+
+def test_prepare_variant_heatmap_matrix_excludes_wildcard_consequence_types():
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "S",
+                "amino_acid_consequence": "D215G",
+                "nsp_aa_change": "",
+                "type_of_change": "joint_frameshift",
+                "type_of_variant": "indel",
+                "alt_freq": "0.0 / 0.7",
+                "samples": "P0 / P1",
+                "variant": "A22206G",
+                "start": 22206,
+            },
+            {
+                "gene": "S",
+                "amino_acid_consequence": "N501Y",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "alt_freq": "0.0 / 0.8",
+                "samples": "P0 / P1",
+                "variant": "A23063T",
+                "start": 23063,
+            },
+        ]
+    )
+
+    matrix = _prepare_variant_heatmap_matrix(
+        table,
+        ["P0", "P1"],
+        0.2,
+        0.2,
+        excluded_consequence_types=["*frameshift*"],
+    )
+
+    assert list(matrix.index) == ["S:N501Y\n(A23063T)"]
+
+
+def test_process_joint_variants_only_adds_single_joint_prefix(tmp_path):
+    csv_path = tmp_path / "results.csv"
+    pd.DataFrame(
+        [
+            {
+                "start": 100,
+                "gene": "S",
+                "amino_acid_consequence": "N501Y",
+                "nsp_aa_change": "",
+                "bcsq_nt_notation": "c.1A>T",
+                "bcsq_aa_notation": "p.N501Y",
+                "aa1_total_properties": "",
+                "aa2_total_properties": "",
+                "aa1_unique_properties": "",
+                "aa2_unique_properties": "",
+                "aa1_weight": "",
+                "aa2_weight": "",
+                "weight_difference": "",
+                "type_of_change": "joint_joint_frameshift",
+            },
+            {
+                "start": 101,
+                "gene": "",
+                "amino_acid_consequence": "",
+                "nsp_aa_change": "",
+                "bcsq_nt_notation": "",
+                "bcsq_aa_notation": "@100",
+                "aa1_total_properties": "",
+                "aa2_total_properties": "",
+                "aa1_unique_properties": "",
+                "aa2_unique_properties": "",
+                "aa1_weight": "",
+                "aa2_weight": "",
+                "weight_difference": "",
+                "type_of_change": "frameshift",
+            },
+        ]
+    ).to_csv(csv_path, index=False)
+
+    result = process_joint_variants(str(csv_path))
+
+    assert result.loc[0, "type_of_change"] == "joint_frameshift"
+    assert result.loc[1, "type_of_change"] == "joint_frameshift"
 
 
 def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch):

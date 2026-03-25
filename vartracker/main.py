@@ -103,6 +103,12 @@ LITERATURE_SCHEMA: list[dict[str, str]] = [
 ]
 
 
+def _parse_csv_option_list(value: str | None) -> list[str]:
+    if value is None:
+        return []
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
 def _print_dependency_error(error: DependencyError) -> None:
     """Render a dependency error with optional remediation tips."""
     message = str(error)
@@ -416,6 +422,16 @@ def _configure_vcf_parser(
         required=False,
         default="AF",
         help="INFO tag name for allele frequency (default: AF)",
+    )
+    vt_group.add_argument(
+        "--heatmap-exclude",
+        action="store",
+        required=False,
+        default="",
+        help=(
+            "Comma-separated amino-acid consequence types to exclude from heatmaps "
+            "(for example: synonymous,frameshift,stop_gained)"
+        ),
     )
 
 
@@ -1592,6 +1608,7 @@ def _process_files(
         pname,
         args.min_snv_freq,
         args.min_indel_freq,
+        excluded_consequence_types=_parse_csv_option_list(args.heatmap_exclude),
         gene_lengths=gene_lengths,
         literature_hits=literature_hits_df,
         literature_table_path=literature_full_csv_path,
