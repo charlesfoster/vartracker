@@ -12,7 +12,7 @@
 ```
 # vartracker
 
-A bioinformatics pipeline to summarise variants called against a reference in a longitudinal study design. Written to investigate longitudinal sequencing data from long-term passaging of SARS-CoV-2. In theory, it could be expanded for other organisms too.
+A bioinformatics pipeline to summarise variants called against a reference in a longitudinal study design. Written to investigate longitudinal sequencing data from long-term passaging of SARS-CoV-2. However, with appropriate reference data it can be expanded to other pathogens too.
 
 **Author:** Dr Charles Foster
 
@@ -40,36 +40,51 @@ A bioinformatics pipeline to summarise variants called against a reference in a 
 
 ## Installation
 
-Requires Python 3.11 or newer.
+The simplest, and preferred, installation route is via a conda-compatible package manager (pixi, conda, or mamba).
 
-### Recommended installation (mamba)
-
-Create the fully pinned, reproducible environment (uses strict channel priority as configured
-in `environment.yml`), then install vartracker from PyPI:
+## Conda/Mamba
+`vartracker` and its external bioinformatics dependencies can be installed from the package channels directly:
 
 ```bash
-mamba create -n vartracker -f environment.yml
+mamba create -n vartracker -c conda-forge -c bioconda vartracker
 mamba activate vartracker
-pip install vartracker
 ```
 
-If you prefer conda:
+If you prefer `conda`:
 
 ```bash
-conda env create -n vartracker -f environment.yml
+conda create -n vartracker -c conda-forge -c bioconda vartracker
 conda activate vartracker
-pip install vartracker
 ```
 
-On Apple Silicon (macOS ARM), the environment may not solve with native packages. Use the x86_64
-subdir or Docker instead:
+### Pixi
+
+You can also install `vartracker` via `pixi` either globally or inside an existing workspace:
 
 ```bash
-CONDA_SUBDIR=osx-64 mamba create -n vartracker -f environment.yml
-mamba activate vartracker
+# global installation
+pixi global install vartracker
+
+# add into an existing workspace
+pixi workspace channel add conda-forge
+pixi workspace channel add bioconda
+pixi add vartracker
 ```
 
-### From PyPI (Python-only)
+### Biocontainers
+
+Every Bioconda package is available as a container image for usage with your preferred container runtime. An example command to pull `vartracker` with `docker`:
+
+```bash
+# latest build
+docker pull quay.io/biocontainers/vartracker:latest
+# specific tag
+docker pull quay.io/biocontainers/vartracker:<tag>
+```
+
+### Alternative: PyPI (Python-only)
+
+If you want a Python-only install (requires Python 3.11 or newer), you can still install from PyPI. In that case you must provide the required external bioinformatics tools yourself (see below):
 
 ```bash
 pip install vartracker
@@ -136,12 +151,15 @@ pip install -e .[dev]
 pre-commit install
 ```
 
-### Docker
+### Docker: self-build
 
 Build a container image that bundles Python, vartracker, and all external bioinformatics tools:
 
 ```bash
-docker build -t vartracker:latest .
+  # released version on Bioconda
+  docker build -t vartracker:release .
+  # development version
+  docker build -t vartracker:dev -f Dockerfile.dev .
 ```
 
 Docker is a self-contained reproducible option. If you publish the image, record the digest and

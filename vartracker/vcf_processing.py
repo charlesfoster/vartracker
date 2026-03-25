@@ -130,6 +130,16 @@ def _derive_vcf_output_paths(
     return out, csq_file, log_file
 
 
+def _normalize_header_line(line: str) -> str:
+    """Adjust known header cardinalities to satisfy bcftools sanity checks."""
+
+    if line.startswith("##INFO=<ID=AF,") or line.startswith("##FORMAT=<ID=AF,"):
+        return re.sub(r"Number=[^,>]+", "Number=A", line, count=1)
+    if line.startswith("##INFO=<ID=SB,") or line.startswith("##FORMAT=<ID=SB,"):
+        return re.sub(r"Number=[^,>]+", "Number=4", line, count=1)
+    return line
+
+
 def rindex(lst, item):
     """Find the last occurrence of an item in a list."""
 
@@ -206,7 +216,7 @@ def format_vcf(
                     "ID": "AF",
                     "Description": "Allele Frequency",
                     "Type": "Float",
-                    "Number": "1",
+                    "Number": "A",
                 }
             )
 
@@ -229,21 +239,19 @@ def format_vcf(
                 "ID": "AF",
                 "Description": "Allele Frequency",
                 "Type": "Float",
-                "Number": "1",
+                "Number": "A",
             }
         )
 
-        if existing_samples:
-            w = Writer(out, vcf_mod, mode="wz")
-        else:
-            header_lines = []
-            for line in vcf_mod.raw_header.strip().splitlines():
-                if line.startswith("#CHROM"):
-                    header_lines.append(f"{line}\t{sample}")
-                else:
-                    header_lines.append(line)
-            header_str = "\n".join(header_lines) + "\n"
-            w = Writer.from_string(out, header_str, mode="wz")
+        header_lines = []
+        for line in vcf_mod.raw_header.strip().splitlines():
+            normalized_line = _normalize_header_line(line)
+            if line.startswith("#CHROM") and not existing_samples:
+                header_lines.append(f"{normalized_line}\t{sample}")
+            else:
+                header_lines.append(normalized_line)
+        header_str = "\n".join(header_lines) + "\n"
+        w = Writer.from_string(out, header_str, mode="wz")
         variants = {}
 
         def _scalar(value):

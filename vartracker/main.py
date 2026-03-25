@@ -1000,6 +1000,9 @@ def _run_vcf_command(args):
                     outputs["literature_hits_full_csv"] = literature_full
                 if os.path.exists(literature_concise):
                     outputs["literature_hits_concise_csv"] = literature_concise
+                parsed_literature = os.path.join(args.outdir, "literature_database.csv")
+                if os.path.exists(parsed_literature):
+                    outputs["literature_database_csv"] = parsed_literature
 
             if manifest is not None:
                 manifest.finish(status="success", outputs=outputs)
@@ -1476,7 +1479,7 @@ def _process_files(
     literature_df = literature
 
     if args.search_pokay and literature_df is None:
-        download_path = os.path.join(tempdir, "literature_database.csv")
+        download_path = os.path.join(args.outdir, "literature_database.csv")
         exit_code = parse_pokay_module.main([download_path])
         if exit_code != 0 or not os.path.exists(download_path):
             raise ProcessingError("Failed to download literature database")

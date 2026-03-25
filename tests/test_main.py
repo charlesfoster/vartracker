@@ -1,6 +1,7 @@
 """Unit tests for vartracker.main helpers."""
 
 from argparse import Namespace
+from pathlib import Path
 from unittest import mock
 
 import importlib
@@ -182,6 +183,95 @@ def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
     )
 
     assert exit_code == 0
+
+
+def test_search_pokay_retains_parsed_database_csv(tmp_path, monkeypatch, minimal_vcf):
+    coverage_path = tmp_path / "sample.cov.txt"
+    coverage_path.write_text("NC_045512.2\t266\t100\n", encoding="utf-8")
+
+    csv_path = tmp_path / "inputs.csv"
+    csv_path.write_text(
+        "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+        "Sample1,0,,,,sample.vcf,sample.cov.txt\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(main_module, "validate_dependencies", lambda mode="vcf": None)
+
+    def fake_setup(args):
+        args.reference = "/tmp/mock_reference.fasta"
+        args.gff3 = "/tmp/mock_annotation.gff3"
+        return args
+
+    monkeypatch.setattr(main_module, "setup_default_paths", fake_setup)
+    monkeypatch.setattr(
+        main_module, "validate_reference_and_annotation", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        main_module, "generate_cumulative_lineplot", lambda *a, **k: None
+    )
+    monkeypatch.setattr(main_module, "generate_variant_heatmap", lambda *a, **k: None)
+    monkeypatch.setattr(
+        main_module, "process_joint_variants", lambda path: pd.read_csv(path)
+    )
+    monkeypatch.setattr(
+        main_module, "generate_gene_table", lambda table, *_a, **_k: table
+    )
+    monkeypatch.setattr(main_module, "plot_gene_table", lambda *a, **k: None)
+    monkeypatch.setattr(
+        main_module, "search_literature", lambda *a, **k: pd.DataFrame()
+    )
+
+    formatted_csq = tmp_path / "formatted.csq.vcf.gz"
+    monkeypatch.setattr(
+        main_module,
+        "format_vcf",
+        lambda *a, **k: (str(tmp_path / "formatted.vcf.gz"), str(formatted_csq)),
+    )
+    monkeypatch.setattr(main_module, "merge_consequences", lambda *a, **k: None)
+    monkeypatch.setattr(
+        main_module,
+        "process_vcf",
+        lambda *a, **k: pd.DataFrame(
+            {
+                "gene": ["S"],
+                "variant": ["A266C"],
+                "amino_acid_consequence": ["S:A1C"],
+                "nsp_aa_change": [""],
+                "presence_absence": ["Y"],
+                "variant_status": ["new"],
+                "persistence_status": ["new_persistent"],
+                "samples": ["Sample1"],
+                "alt_freq": ["0.5"],
+            }
+        ),
+    )
+
+    def fake_parse_pokay(argv):
+        output_path = Path(argv[0])
+        output_path.write_text(
+            "gene,mutation,information,reference\nS,S:A1C,Mock hit,PMID123\n",
+            encoding="utf-8",
+        )
+        return 0
+
+    monkeypatch.setattr(main_module.parse_pokay_module, "main", fake_parse_pokay)
+
+    outdir = tmp_path / "results"
+    exit_code = main_module.main(
+        [
+            "vcf",
+            str(csv_path),
+            "--name",
+            "Example",
+            "--outdir",
+            str(outdir),
+            "--search-pokay",
+        ]
+    )
+
+    assert exit_code == 0
+    assert (outdir / "literature_database.csv").exists()
 
 
 def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
