@@ -9,7 +9,7 @@ import textwrap
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-RESULTS_SCHEMA_VERSION = "1.0"
+RESULTS_SCHEMA_VERSION = "1.1"
 
 RESULTS_SCHEMA: list[dict[str, str]] = [
     {
@@ -139,11 +139,18 @@ RESULTS_SCHEMA: list[dict[str, str]] = [
         "values": "",
     },
     {
-        "name": "overall_variant_qc",
-        "type": "string",
-        "description": "Aggregated QC status across samples.",
+        "name": "all_samples_pass_qc",
+        "type": "boolean",
+        "description": "True if every sample passes per-sample variant QC.",
         "units": "",
-        "values": "PASS, FAIL",
+        "values": "true, false",
+    },
+    {
+        "name": "proportion_samples_passing_qc",
+        "type": "number",
+        "description": "Proportion of samples passing per-sample variant QC.",
+        "units": "fraction",
+        "values": "0-1",
     },
     {
         "name": "per_sample_variant_qc",

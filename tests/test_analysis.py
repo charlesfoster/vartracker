@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from vartracker.analysis import (
+    _heatmap_figure_size,
     search_literature,
     _prepare_variant_heatmap_matrix,
     process_joint_variants,
@@ -243,7 +245,8 @@ def test_prepare_variant_heatmap_matrix_applies_extended_filters():
                 "type_of_variant": "snp",
                 "variant_status": "new",
                 "persistence_status": "new_persistent",
-                "overall_variant_qc": "PASS",
+                "all_samples_pass_qc": True,
+                "proportion_samples_passing_qc": 1.0,
                 "presence_absence": "N / Y / Y",
                 "alt_freq": "0.0 / 0.6 / 0.7",
                 "variant_site_depth": "0 / 120 / 125",
@@ -259,7 +262,8 @@ def test_prepare_variant_heatmap_matrix_applies_extended_filters():
                 "type_of_variant": "indel",
                 "variant_status": "new",
                 "persistence_status": "new_persistent",
-                "overall_variant_qc": "PASS",
+                "all_samples_pass_qc": True,
+                "proportion_samples_passing_qc": 0.33,
                 "presence_absence": "N / N / Y",
                 "alt_freq": "0.0 / 0.0 / 0.8",
                 "variant_site_depth": "0 / 0 / 130",
@@ -275,7 +279,8 @@ def test_prepare_variant_heatmap_matrix_applies_extended_filters():
                 "type_of_variant": "snp",
                 "variant_status": "original",
                 "persistence_status": "original_retained",
-                "overall_variant_qc": "FAIL",
+                "all_samples_pass_qc": False,
+                "proportion_samples_passing_qc": 0.67,
                 "presence_absence": "Y / Y / Y",
                 "alt_freq": "0.5 / 0.5 / 0.5",
                 "variant_site_depth": "110 / 115 / 120",
@@ -294,7 +299,8 @@ def test_prepare_variant_heatmap_matrix_applies_extended_filters():
         only_new=True,
         gene_include=["S"],
         variant_type_include=["snp"],
-        qc_include=["pass"],
+        qc_include=["true"],
+        min_prop_passing_qc=0.9,
         min_persistence=2,
         min_max_af=0.6,
         sample_subset=["P1", "P2"],
@@ -364,6 +370,7 @@ def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch
                 "type_of_change": "missense",
                 "type_of_variant": "snp",
                 "alt_freq": "0.0 / 0.5",
+                "per_sample_variant_qc": "P / F",
                 "samples": "P0 / P1",
                 "variant": "A22206G",
                 "start": 22206,
@@ -377,6 +384,7 @@ def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch
                 "type_of_change": "missense",
                 "type_of_variant": "snp",
                 "alt_freq": "0.2 / 0.6",
+                "per_sample_variant_qc": "P / P",
                 "samples": "P0 / P1",
                 "variant": "C21575T",
                 "start": 21575,
@@ -430,8 +438,22 @@ def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch
     assert "Literature results" in content
     assert "table-scroll" in content
     assert "heatmap-anchor" in content
+    assert "cell-qc-fail" in content
+    assert "AF=0.50, QC=FAIL" in content
     assert 'data-anchor="s:d215g' in content
     assert 'data-anchor="nsp6:l37f' in content
     assert ">10.1000/xyz123</a>" in content
     assert ".cell:hover .cell-value" in content
     assert "clearActive" in content
+
+
+def test_heatmap_figure_size_enforces_minimum_row_height():
+    width, height = _heatmap_figure_size(6, 2)
+
+    assert width == 4.0
+    assert height == 4.0
+
+    width, height = _heatmap_figure_size(8, 2)
+
+    assert width == 4.0
+    assert height == pytest.approx(5.2)

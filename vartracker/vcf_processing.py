@@ -581,7 +581,13 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
             persistent_status = "unknown"
 
         depths_qc = calculate_variant_site_depths(cov_df, v, samples, min_depth)
-        overall_variant_qc = "FAIL" if "F" in depths_qc["variant_qc"] else "PASS"
+        all_samples_pass_qc = "F" not in depths_qc["variant_qc"]
+        proportion_samples_passing_qc = (
+            sum(flag == "P" for flag in depths_qc["variant_qc"])
+            / len(depths_qc["variant_qc"])
+            if depths_qc["variant_qc"]
+            else 0.0
+        )
         first_appearance = (
             samples[presence_absence.index("Y")] if "Y" in presence_absence else "None"
         )
@@ -604,7 +610,8 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
                     presence_absence,
                     first_appearance,
                     last_appearance,
-                    overall_variant_qc,
+                    all_samples_pass_qc,
+                    proportion_samples_passing_qc,
                     depths_qc,
                     allele_freqs,
                     samples,
@@ -620,7 +627,8 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
                 presence_absence,
                 first_appearance,
                 last_appearance,
-                overall_variant_qc,
+                all_samples_pass_qc,
+                proportion_samples_passing_qc,
                 depths_qc,
                 allele_freqs,
                 samples,
@@ -639,7 +647,8 @@ def _process_annotation(
     presence_absence,
     first_appearance,
     last_appearance,
-    overall_variant_qc,
+    all_samples_pass_qc,
+    proportion_samples_passing_qc,
     depths_qc,
     allele_freqs,
     samples,
@@ -667,7 +676,8 @@ def _process_annotation(
             "presence_absence": " / ".join(presence_absence),
             "first_appearance": first_appearance,
             "last_appearance": last_appearance,
-            "overall_variant_qc": overall_variant_qc,
+            "all_samples_pass_qc": all_samples_pass_qc,
+            "proportion_samples_passing_qc": proportion_samples_passing_qc,
             "per_sample_variant_qc": " / ".join(depths_qc["variant_qc"]),
             "aa1_total_properties": anno[0],
             "aa2_total_properties": anno[0],
@@ -712,7 +722,8 @@ def _process_annotation(
             "presence_absence": " / ".join(presence_absence),
             "first_appearance": first_appearance,
             "last_appearance": last_appearance,
-            "overall_variant_qc": overall_variant_qc,
+            "all_samples_pass_qc": all_samples_pass_qc,
+            "proportion_samples_passing_qc": proportion_samples_passing_qc,
             "per_sample_variant_qc": " / ".join(depths_qc["variant_qc"]),
             "aa1_total_properties": ";".join(aa_exploration.aa1_total_properties),
             "aa2_total_properties": ";".join(aa_exploration.aa2_total_properties),
@@ -737,7 +748,8 @@ def _create_unannotated_result(
     presence_absence,
     first_appearance,
     last_appearance,
-    overall_variant_qc,
+    all_samples_pass_qc,
+    proportion_samples_passing_qc,
     depths_qc,
     allele_freqs,
     samples,
@@ -770,7 +782,8 @@ def _create_unannotated_result(
         "presence_absence": " / ".join(presence_absence),
         "first_appearance": first_appearance,
         "last_appearance": last_appearance,
-        "overall_variant_qc": overall_variant_qc,
+        "all_samples_pass_qc": all_samples_pass_qc,
+        "proportion_samples_passing_qc": proportion_samples_passing_qc,
         "per_sample_variant_qc": " / ".join(depths_qc["variant_qc"]),
         "aa1_total_properties": "None",
         "aa2_total_properties": "None",

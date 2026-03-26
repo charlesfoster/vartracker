@@ -174,7 +174,17 @@ def _add_heatmap_option_arguments(group: argparse._ArgumentGroup) -> None:
         action="store",
         required=False,
         default="",
-        help="Comma-separated overall QC patterns to include (e.g. PASS)",
+        help=(
+            "Comma-separated all-samples QC patterns to include "
+            "(e.g. true,false,pass,fail)"
+        ),
+    )
+    group.add_argument(
+        "--min-prop-passing-qc",
+        action="store",
+        type=float,
+        default=None,
+        help="Minimum proportion of samples that must pass per-sample QC (0-1)",
     )
     group.add_argument(
         "--heatmap-min-persistence",
@@ -240,6 +250,7 @@ def _collect_heatmap_kwargs(args) -> dict[str, object]:
             getattr(args, "heatmap_variant_type", "")
         ),
         "qc_include": _parse_csv_option_list(getattr(args, "heatmap_qc", "")),
+        "min_prop_passing_qc": getattr(args, "min_prop_passing_qc", None),
         "min_persistence": getattr(args, "heatmap_min_persistence", None),
         "min_max_af": getattr(args, "heatmap_min_max_af", None),
         "min_sample_af": getattr(args, "heatmap_min_sample_af", None),
@@ -987,6 +998,14 @@ def _normalise_rulegraph_path(path: str | None) -> str | None:
     if not resolved.lower().endswith(".dot"):
         resolved = f"{resolved}.dot"
     return str(Path(resolved).resolve())
+
+
+def _drop_exact_duplicate_result_rows(table: pd.DataFrame) -> pd.DataFrame:
+    deduped = table.drop_duplicates().reset_index(drop=True)
+    removed = len(table) - len(deduped)
+    if removed:
+        print(f"Removed {removed} exact duplicate result rows.")
+    return deduped
 
 
 def main(sysargs=None):
@@ -1874,6 +1893,8 @@ def _process_files(
     else:
         pname = ""
 
+    table = _drop_exact_duplicate_result_rows(table)
+
     # Write initial results
     outfile = os.path.join(args.outdir, args.filename)
     table.fillna("").to_csv(outfile, index=None)
@@ -1883,6 +1904,9 @@ def _process_files(
         table = process_joint_variants(outfile)
     else:
         table = pd.read_csv(outfile, keep_default_na=False)
+
+    table = _drop_exact_duplicate_result_rows(table)
+    table.fillna("").to_csv(outfile, index=None)
 
     literature_hits_df = None
     literature_full_csv_path = None

@@ -31,6 +31,25 @@ def test_setup_default_paths_preserves_explicit_values():
     assert updated.gff3 == "/tmp/custom.gff3"
 
 
+def test_drop_exact_duplicate_result_rows_removes_only_exact_duplicates(capsys):
+    table = pd.DataFrame(
+        [
+            {"variant": "A1C", "gene": "S", "amino_acid_consequence": "S:A1C"},
+            {"variant": "A1C", "gene": "S", "amino_acid_consequence": "S:A1C"},
+            {"variant": "A1C", "gene": "N", "amino_acid_consequence": "N:A1C"},
+        ]
+    )
+
+    deduped = main_module._drop_exact_duplicate_result_rows(table)
+
+    assert len(deduped) == 2
+    assert deduped.to_dict(orient="records") == [
+        {"variant": "A1C", "gene": "S", "amino_acid_consequence": "S:A1C"},
+        {"variant": "A1C", "gene": "N", "amino_acid_consequence": "N:A1C"},
+    ]
+    assert "Removed 1 exact duplicate result rows." in capsys.readouterr().out
+
+
 def test_prepare_reference_command_invokes_bundle(monkeypatch, tmp_path):
     recorded = {}
 
@@ -362,6 +381,8 @@ def test_vcf_heatmap_options_are_forwarded_to_heatmap(
             "snp",
             "--heatmap-qc",
             "PASS",
+            "--min-prop-passing-qc",
+            "0.75",
             "--heatmap-min-persistence",
             "2",
             "--heatmap-min-max-af",
@@ -390,6 +411,7 @@ def test_vcf_heatmap_options_are_forwarded_to_heatmap(
     assert recorded["gene_exclude"] == ["N"]
     assert recorded["variant_type_include"] == ["snp"]
     assert recorded["qc_include"] == ["PASS"]
+    assert recorded["min_prop_passing_qc"] == 0.75
     assert recorded["min_persistence"] == 2
     assert recorded["min_max_af"] == 0.4
     assert recorded["min_sample_af"] == 0.3

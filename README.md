@@ -269,7 +269,8 @@ Heatmap filtering:
 - `--heatmap-only-new`: only include variants with `variant_status == new`.
 - `--heatmap-gene-include` and `--heatmap-gene-exclude`: comma-separated gene patterns.
 - `--heatmap-variant-type`: comma-separated variant-type patterns such as `snp` or `indel`.
-- `--heatmap-qc`: comma-separated `overall_variant_qc` patterns to include.
+- `--heatmap-qc`: comma-separated `all_samples_pass_qc` patterns to include. Accepted values include `true`, `false`, `pass`, and `fail`.
+- `--min-prop-passing-qc`: minimum fraction of samples that must pass per-sample QC.
 - `--heatmap-min-persistence`: minimum number of included samples in which the variant must be present.
 - `--heatmap-min-max-af`: minimum maximum allele frequency across included samples.
 - `--heatmap-min-sample-af`: minimum allele frequency that must be reached in at least one included sample.
