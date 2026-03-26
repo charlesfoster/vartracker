@@ -202,6 +202,11 @@ vartracker end-to-end path/to/read_inputs.csv \
   --cores 12 \
   --outdir results/e2e_summary
 
+# Re-plot a heatmap from an existing vartracker results file
+vartracker plot heatmap results/results.csv \
+  --heatmap-aa-exclude "*frameshift*" \
+  --outdir results/replots
+
 # Generate a template spreadsheet for a directory of files
 vartracker prepare spreadsheet --mode e2e --dir data/passaging --out inputs.csv
 
@@ -249,18 +254,29 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 ### Mode-specific options
 
 - `vartracker vcf` – accepts plotting and filtering options such as `--min-snv-freq`, `--min-indel-freq`,
-  `--allele-frequency-tag`, `--heatmap-exclude`, `--name`, `--outdir`, `--passage-cap`, `--manifest-level`, and literature controls
+  `--allele-frequency-tag`, `--heatmap-aa-exclude`, `--heatmap-aa-include`, `--name`, `--outdir`, `--sample-cap`, `--manifest-level`, and literature controls
   (`--search-pokay`, `--literature-csv`). Use `--test` to run the bundled smoke test.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
   `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
 - `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
+- `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV.
 
 Heatmap filtering:
-- By default, all consequence classes are included in the heatmaps.
-- Use `--heatmap-exclude` with a comma-separated list of `type_of_change` values to omit those consequence classes from the heatmaps.
-- Any listed value is excluded; this is not limited to a fixed set of consequence classes.
-- Shell-style wildcard matching is supported, so patterns such as `*frameshift*` will exclude any matching consequence class.
-- Example: `--heatmap-exclude "synonymous,frameshift,stop_gained"`
+- By default, all consequence classes are included except joint variants. Use `--heatmap-include-joint` to show joint variants.
+- `--heatmap-aa-exclude`: comma-separated `type_of_change` patterns to exclude. Wildcards are supported.
+- `--heatmap-aa-include`: comma-separated `type_of_change` patterns to include.
+- `--heatmap-only-persistent`: only include `new_persistent` variants.
+- `--heatmap-only-new`: only include variants with `variant_status == new`.
+- `--heatmap-gene-include` and `--heatmap-gene-exclude`: comma-separated gene patterns.
+- `--heatmap-variant-type`: comma-separated variant-type patterns such as `snp` or `indel`.
+- `--heatmap-qc`: comma-separated `overall_variant_qc` patterns to include.
+- `--heatmap-min-persistence`: minimum number of included samples in which the variant must be present.
+- `--heatmap-min-max-af`: minimum maximum allele frequency across included samples.
+- `--heatmap-min-sample-af`: minimum allele frequency that must be reached in at least one included sample.
+- `--heatmap-sample-subset`: comma-separated sample-name patterns to plot.
+- `--heatmap-hide-singletons`: hide variants present in only one included sample.
+- `--heatmap-min-depth`: minimum site depth a variant must reach in at least one included sample.
+- Example: `--heatmap-aa-exclude "synonymous,*frameshift*,stop_gained"`
 - `vartracker prepare spreadsheet` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
   and `--dry-run` to preview without writing a file.
 - `vartracker prepare reference` – build a merged FASTA/GFF3 bundle from GenBank nucleotide accessions.

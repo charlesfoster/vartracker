@@ -32,6 +32,17 @@ def _ensure_joint_prefix(change_type: object) -> str:
     return f"joint_{normalised}" if normalised else "joint"
 
 
+def _parse_slash_separated_tokens(value: object) -> list[str]:
+    return [token.strip() for token in str(value or "").split(" / ")]
+
+
+def _match_any_pattern(value: object, patterns: Sequence[str]) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return any(fnmatch.fnmatch(text, pattern) for pattern in patterns)
+
+
 def process_joint_variants(path):
     """
     Process joint variants from bcftools csq output.
@@ -504,6 +515,20 @@ def _prepare_variant_heatmap_matrix(
     min_snv_freq: float,
     min_indel_freq: float,
     excluded_consequence_types: Sequence[str] | None = None,
+    included_consequence_types: Sequence[str] | None = None,
+    include_joint: bool = False,
+    only_persistent: bool = False,
+    only_new: bool = False,
+    gene_include: Sequence[str] | None = None,
+    gene_exclude: Sequence[str] | None = None,
+    variant_type_include: Sequence[str] | None = None,
+    qc_include: Sequence[str] | None = None,
+    min_persistence: int | None = None,
+    min_max_af: float | None = None,
+    min_sample_af: float | None = None,
+    sample_subset: Sequence[str] | None = None,
+    hide_singletons: bool = False,
+    min_depth: int | None = None,
     gene_lengths: Dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """Prepare a matrix of allele frequencies for heatmap plotting."""
@@ -518,6 +543,19 @@ def _prepare_variant_heatmap_matrix(
         ordered_samples = [
             s.strip() for s in str(table.iloc[0]["samples"]).split(" / ")
         ]
+    sample_subset_patterns = [
+        str(value).strip().lower()
+        for value in (sample_subset or [])
+        if str(value).strip()
+    ]
+    if sample_subset_patterns:
+        ordered_samples = [
+            sample
+            for sample in ordered_samples
+            if _match_any_pattern(sample, sample_subset_patterns)
+        ]
+    if not ordered_samples:
+        return pd.DataFrame(columns=[])
 
     use_nsps = True
     if gene_lengths is not None:
@@ -538,6 +576,37 @@ def _prepare_variant_heatmap_matrix(
         for value in (excluded_consequence_types or [])
         if str(value).strip()
     }
+    included_patterns = {
+        str(value).strip().lower()
+        for value in (included_consequence_types or [])
+        if str(value).strip()
+    }
+    gene_include_patterns = {
+        str(value).strip().lower()
+        for value in (gene_include or [])
+        if str(value).strip()
+    }
+    gene_exclude_patterns = {
+        str(value).strip().lower()
+        for value in (gene_exclude or [])
+        if str(value).strip()
+    }
+    variant_type_patterns = {
+        str(value).strip().lower()
+        for value in (variant_type_include or [])
+        if str(value).strip()
+    }
+    qc_patterns = {
+        str(value).strip().lower() for value in (qc_include or []) if str(value).strip()
+    }
+    effective_min_af = max(
+        value
+        for value in (
+            0.0,
+            min_max_af if min_max_af is not None else 0.0,
+            min_sample_af if min_sample_af is not None else 0.0,
+        )
+    )
 
     records: List[Dict[str, Union[str, float, int]]] = []
     seen_labels = set()
@@ -547,29 +616,91 @@ def _prepare_variant_heatmap_matrix(
         if str(gene_value) in {"5' UTR", "3' UTR", "INTERGENIC"}:
             continue
 
+        if gene_include_patterns and not _match_any_pattern(
+            gene_value, list(gene_include_patterns)
+        ):
+            continue
+        if gene_exclude_patterns and _match_any_pattern(
+            gene_value, list(gene_exclude_patterns)
+        ):
+            continue
+
         gene_label, display_label, base_label = _resolve_variant_labels(row)
 
         if base_label in seen_labels:
             continue
 
         change_type = str(getattr(row, "type_of_change", "")).strip().lower()
+        if not include_joint and change_type.startswith("joint"):
+            continue
+        if included_patterns and not any(
+            fnmatch.fnmatch(change_type, pattern) for pattern in included_patterns
+        ):
+            continue
         if any(fnmatch.fnmatch(change_type, pattern) for pattern in excluded_patterns):
             continue
 
-        variant_type = str(getattr(row, "type_of_variant", "")).lower()
+        if (
+            only_persistent
+            and str(getattr(row, "persistence_status", "")).strip().lower()
+            != "new_persistent"
+        ):
+            continue
+        if (
+            only_new
+            and str(getattr(row, "variant_status", "")).strip().lower() != "new"
+        ):
+            continue
 
-        sample_tokens = [
-            s.strip() for s in str(getattr(row, "samples", "")).split(" / ")
-        ]
+        variant_type = str(getattr(row, "type_of_variant", "")).lower()
+        if variant_type_patterns and not any(
+            fnmatch.fnmatch(variant_type, pattern) for pattern in variant_type_patterns
+        ):
+            continue
+        if qc_patterns and not _match_any_pattern(
+            getattr(row, "overall_variant_qc", ""), list(qc_patterns)
+        ):
+            continue
+
+        sample_tokens = _parse_slash_separated_tokens(getattr(row, "samples", ""))
         freq_tokens = [
             _coerce_frequency(token)
-            for token in str(getattr(row, "alt_freq", "")).split(" / ")
+            for token in _parse_slash_separated_tokens(getattr(row, "alt_freq", ""))
         ]
+        presence_tokens = _parse_slash_separated_tokens(
+            getattr(row, "presence_absence", "")
+        )
+        depth_tokens = _parse_slash_separated_tokens(
+            getattr(row, "variant_site_depth", "")
+        )
 
         if not freq_tokens:
             continue
 
-        max_freq = max(freq_tokens)
+        sample_freq_map = {
+            sample: freq for sample, freq in zip(sample_tokens, freq_tokens)
+        }
+        sample_presence_map = {
+            sample: token for sample, token in zip(sample_tokens, presence_tokens)
+        }
+        sample_depth_map: dict[str, float] = {}
+        for sample, token in zip(sample_tokens, depth_tokens):
+            text = str(token).strip()
+            if text in {"", ".", "M"}:
+                sample_depth_map[sample] = 0.0
+                continue
+            try:
+                sample_depth_map[sample] = float(text)
+            except ValueError:
+                sample_depth_map[sample] = 0.0
+
+        row_values = [sample_freq_map.get(sample, 0.0) for sample in ordered_samples]
+        row_presence = [
+            sample_presence_map.get(sample, "N") for sample in ordered_samples
+        ]
+        row_depths = [sample_depth_map.get(sample, 0.0) for sample in ordered_samples]
+
+        max_freq = max(row_values) if row_values else 0.0
 
         threshold = min_snv_freq
         if "indel" in variant_type:
@@ -577,11 +708,17 @@ def _prepare_variant_heatmap_matrix(
 
         if max_freq < threshold:
             continue
-
-        sample_freq_map = {
-            sample: freq for sample, freq in zip(sample_tokens, freq_tokens)
-        }
-        row_values = [sample_freq_map.get(sample, 0.0) for sample in ordered_samples]
+        if effective_min_af and max_freq < effective_min_af:
+            continue
+        if (
+            min_persistence is not None
+            and sum(token == "Y" for token in row_presence) < min_persistence
+        ):
+            continue
+        if hide_singletons and sum(token == "Y" for token in row_presence) <= 1:
+            continue
+        if min_depth is not None and max(row_depths, default=0.0) < min_depth:
+            continue
 
         record: Dict[str, Union[str, float, int]] = {
             "label": display_label,
@@ -1092,6 +1229,20 @@ def generate_variant_heatmap(
     min_snv_freq: float,
     min_indel_freq: float,
     excluded_consequence_types: Sequence[str] | None = None,
+    included_consequence_types: Sequence[str] | None = None,
+    include_joint: bool = False,
+    only_persistent: bool = False,
+    only_new: bool = False,
+    gene_include: Sequence[str] | None = None,
+    gene_exclude: Sequence[str] | None = None,
+    variant_type_include: Sequence[str] | None = None,
+    qc_include: Sequence[str] | None = None,
+    min_persistence: int | None = None,
+    min_max_af: float | None = None,
+    min_sample_af: float | None = None,
+    sample_subset: Sequence[str] | None = None,
+    hide_singletons: bool = False,
+    min_depth: int | None = None,
     gene_lengths: Dict[str, int] | None = None,
     literature_hits: Optional[pd.DataFrame] = None,
     literature_table_path: Optional[str] = None,
@@ -1106,6 +1257,20 @@ def generate_variant_heatmap(
             min_snv_freq,
             min_indel_freq,
             excluded_consequence_types,
+            included_consequence_types,
+            include_joint,
+            only_persistent,
+            only_new,
+            gene_include,
+            gene_exclude,
+            variant_type_include,
+            qc_include,
+            min_persistence,
+            min_max_af,
+            min_sample_af,
+            sample_subset,
+            hide_singletons,
+            min_depth,
             gene_lengths,
         )
         if heatmap_data.empty:

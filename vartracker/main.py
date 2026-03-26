@@ -109,6 +109,148 @@ def _parse_csv_option_list(value: str | None) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
+def _add_heatmap_option_arguments(group: argparse._ArgumentGroup) -> None:
+    group.add_argument(
+        "--heatmap-aa-exclude",
+        action="store",
+        required=False,
+        default="",
+        help=(
+            "Comma-separated `type_of_change` patterns to exclude from heatmaps "
+            "(wildcards supported, e.g. synonymous,*frameshift*)"
+        ),
+    )
+    group.add_argument(
+        "--heatmap-aa-include",
+        action="store",
+        required=False,
+        default="",
+        help=(
+            "Comma-separated `type_of_change` patterns to include in heatmaps "
+            "(wildcards supported)"
+        ),
+    )
+    group.add_argument(
+        "--heatmap-include-joint",
+        action="store_true",
+        default=False,
+        help="Include joint variants in heatmaps (default: exclude them)",
+    )
+    group.add_argument(
+        "--heatmap-only-persistent",
+        action="store_true",
+        default=False,
+        help="Only include variants with persistence_status == new_persistent",
+    )
+    group.add_argument(
+        "--heatmap-only-new",
+        action="store_true",
+        default=False,
+        help="Only include variants with variant_status == new",
+    )
+    group.add_argument(
+        "--heatmap-gene-include",
+        action="store",
+        required=False,
+        default="",
+        help="Comma-separated gene patterns to include in heatmaps",
+    )
+    group.add_argument(
+        "--heatmap-gene-exclude",
+        action="store",
+        required=False,
+        default="",
+        help="Comma-separated gene patterns to exclude from heatmaps",
+    )
+    group.add_argument(
+        "--heatmap-variant-type",
+        action="store",
+        required=False,
+        default="",
+        help="Comma-separated variant type patterns to include (e.g. snp,indel)",
+    )
+    group.add_argument(
+        "--heatmap-qc",
+        action="store",
+        required=False,
+        default="",
+        help="Comma-separated overall QC patterns to include (e.g. PASS)",
+    )
+    group.add_argument(
+        "--heatmap-min-persistence",
+        action="store",
+        type=int,
+        default=None,
+        help="Minimum number of samples in which a variant must be present",
+    )
+    group.add_argument(
+        "--heatmap-min-max-af",
+        action="store",
+        type=float,
+        default=None,
+        help="Minimum maximum allele frequency across included samples",
+    )
+    group.add_argument(
+        "--heatmap-min-sample-af",
+        action="store",
+        type=float,
+        default=None,
+        help="Minimum allele frequency that must be reached in at least one included sample",
+    )
+    group.add_argument(
+        "--heatmap-sample-subset",
+        action="store",
+        required=False,
+        default="",
+        help="Comma-separated sample name patterns to plot",
+    )
+    group.add_argument(
+        "--heatmap-hide-singletons",
+        action="store_true",
+        default=False,
+        help="Hide variants present in only one included sample",
+    )
+    group.add_argument(
+        "--heatmap-min-depth",
+        action="store",
+        type=int,
+        default=None,
+        help="Minimum site depth a variant must reach in at least one included sample",
+    )
+
+
+def _collect_heatmap_kwargs(args) -> dict[str, object]:
+    return {
+        "excluded_consequence_types": _parse_csv_option_list(
+            getattr(args, "heatmap_aa_exclude", "")
+        ),
+        "included_consequence_types": _parse_csv_option_list(
+            getattr(args, "heatmap_aa_include", "")
+        ),
+        "include_joint": getattr(args, "heatmap_include_joint", False),
+        "only_persistent": getattr(args, "heatmap_only_persistent", False),
+        "only_new": getattr(args, "heatmap_only_new", False),
+        "gene_include": _parse_csv_option_list(
+            getattr(args, "heatmap_gene_include", "")
+        ),
+        "gene_exclude": _parse_csv_option_list(
+            getattr(args, "heatmap_gene_exclude", "")
+        ),
+        "variant_type_include": _parse_csv_option_list(
+            getattr(args, "heatmap_variant_type", "")
+        ),
+        "qc_include": _parse_csv_option_list(getattr(args, "heatmap_qc", "")),
+        "min_persistence": getattr(args, "heatmap_min_persistence", None),
+        "min_max_af": getattr(args, "heatmap_min_max_af", None),
+        "min_sample_af": getattr(args, "heatmap_min_sample_af", None),
+        "sample_subset": _parse_csv_option_list(
+            getattr(args, "heatmap_sample_subset", "")
+        ),
+        "hide_singletons": getattr(args, "heatmap_hide_singletons", False),
+        "min_depth": getattr(args, "heatmap_min_depth", None),
+    }
+
+
 def _print_dependency_error(error: DependencyError) -> None:
     """Render a dependency error with optional remediation tips."""
     message = str(error)
@@ -303,9 +445,19 @@ def _configure_vcf_parser(
         else:
             parser.add_argument("input_csv", nargs="?", help="Input CSV file")
 
-    vt_group = parser.add_argument_group("Vartracker options")
+    analysis_group = parser.add_argument_group("Vartracker Analysis Options")
+    output_group = parser.add_argument_group("Vartracker Output Options")
+    heatmap_group = parser.add_argument_group("Heatmap")
 
-    vt_group.add_argument(
+    analysis_group.add_argument(
+        "-r",
+        "--reference",
+        action="store",
+        required=False,
+        default=None,
+        help="Reference genome (default: uses packaged SARS-CoV-2 reference)",
+    )
+    analysis_group.add_argument(
         "-g",
         "--gff3",
         action="store",
@@ -313,7 +465,14 @@ def _configure_vcf_parser(
         default=None,
         help="GFF3 annotations to use (default: packaged SARS-CoV-2 annotations)",
     )
-    vt_group.add_argument(
+    analysis_group.add_argument(
+        "--allele-frequency-tag",
+        action="store",
+        required=False,
+        default="AF",
+        help="INFO tag name for allele frequency (default: AF)",
+    )
+    analysis_group.add_argument(
         "-m",
         "--min-snv-freq",
         action="store",
@@ -322,7 +481,7 @@ def _configure_vcf_parser(
         default=0.03,
         help="Minimum allele frequency of SNV variants to keep (default: 0.03)",
     )
-    vt_group.add_argument(
+    analysis_group.add_argument(
         "-M",
         "--min-indel-freq",
         action="store",
@@ -331,7 +490,7 @@ def _configure_vcf_parser(
         default=0.1,
         help="Minimum allele frequency of indel variants to keep (default: 0.1)",
     )
-    vt_group.add_argument(
+    analysis_group.add_argument(
         "-d",
         "--min-depth",
         action="store",
@@ -340,7 +499,34 @@ def _configure_vcf_parser(
         default=10,
         help="Minimum depth threshold for variant QC (default: 10)",
     )
-    vt_group.add_argument(
+    analysis_group.add_argument(
+        "--sample-cap",
+        action="store",
+        type=int,
+        help="Only analyse samples with sample_number less than or equal to this value",
+        default=None,
+    )
+    analysis_group.add_argument(
+        "--literature-csv",
+        action="store",
+        required=False,
+        default=None,
+        help="Path to a literature CSV file (see README for file structure)",
+    )
+    analysis_group.add_argument(
+        "--search-pokay",
+        action="store_true",
+        help='Automatically download and search against the "pokay" SARS-CoV-2 literature database.',
+        default=False,
+    )
+    analysis_group.add_argument(
+        "--test",
+        action="store_true",
+        help="Run vartracker against the bundled demonstration dataset",
+        default=False,
+    )
+
+    output_group.add_argument(
         "-n",
         "--name",
         action="store",
@@ -348,7 +534,7 @@ def _configure_vcf_parser(
         default=None,
         help="Optional: add a column to results with the name specified here",
     )
-    vt_group.add_argument(
+    output_group.add_argument(
         "-o",
         "--outdir",
         action="store",
@@ -356,13 +542,13 @@ def _configure_vcf_parser(
         default=".",
         help="Output directory for vartracker results (default: current directory)",
     )
-    vt_group.add_argument(
+    output_group.add_argument(
         "--manifest-level",
         choices=["light", "deep"],
         default="light",
         help="Manifest detail level for run metadata (default: light)",
     )
-    vt_group.add_argument(
+    output_group.add_argument(
         "-f",
         "--filename",
         action="store",
@@ -370,69 +556,41 @@ def _configure_vcf_parser(
         default="results.csv",
         help="Output file name (default: results.csv)",
     )
-    vt_group.add_argument(
-        "-r",
-        "--reference",
-        action="store",
-        required=False,
-        default=None,
-        help="Reference genome (default: uses packaged SARS-CoV-2 reference)",
-    )
-    vt_group.add_argument(
-        "--passage-cap",
-        action="store",
-        type=int,
-        help="Cap the number of passages at this number",
-        default=None,
-    )
-    vt_group.add_argument(
+
+    output_group.add_argument(
         "--debug",
         action="store_true",
         help="Print commands being run for debugging",
         default=False,
     )
-    vt_group.add_argument(
+    output_group.add_argument(
         "--keep-temp",
         action="store_true",
         help="Keep temporary files for debugging",
         default=False,
     )
-    vt_group.add_argument(
-        "--literature-csv",
-        action="store",
-        required=False,
-        default=None,
-        help="Path to a literature CSV file (see README for file structure)",
-    )
-    vt_group.add_argument(
-        "--search-pokay",
-        action="store_true",
-        help='Automatically download and search against the "pokay" SARS-CoV-2 literature database.',
-        default=False,
-    )
-    vt_group.add_argument(
-        "--test",
-        action="store_true",
-        help="Run vartracker against the bundled demonstration dataset",
-        default=False,
-    )
-    vt_group.add_argument(
-        "--allele-frequency-tag",
-        action="store",
-        required=False,
-        default="AF",
-        help="INFO tag name for allele frequency (default: AF)",
-    )
-    vt_group.add_argument(
-        "--heatmap-exclude",
-        action="store",
-        required=False,
-        default="",
-        help=(
-            "Comma-separated amino-acid consequence types to exclude from heatmaps "
-            "(for example: synonymous,frameshift,stop_gained)"
-        ),
-    )
+
+    _add_heatmap_option_arguments(heatmap_group)
+
+
+def _move_action_group_after(
+    parser: argparse.ArgumentParser, group_title: str, anchor_title: str
+) -> None:
+    groups = parser._action_groups
+    try:
+        group_index = next(
+            i for i, grp in enumerate(groups) if grp.title == group_title
+        )
+        anchor_index = next(
+            i for i, grp in enumerate(groups) if grp.title == anchor_title
+        )
+    except StopIteration:
+        return
+
+    group = groups.pop(group_index)
+    if group_index < anchor_index:
+        anchor_index -= 1
+    groups.insert(anchor_index + 1, group)
 
 
 def _add_vcf_subparser(subparsers):
@@ -498,8 +656,6 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
 """,
     )
 
-    _configure_vcf_parser(bam_parser, include_input_csv=True, input_csv_required=False)
-
     snk_group = bam_parser.add_argument_group("Snakemake options")
     snk_group.add_argument(
         "--snakemake-outdir",
@@ -534,6 +690,11 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
         action="store_true",
         help="Force Snakemake to recompute all targets (forceall)",
         default=False,
+    )
+
+    _configure_vcf_parser(bam_parser, include_input_csv=True, input_csv_required=False)
+    _move_action_group_after(
+        bam_parser, "Snakemake options", "Vartracker Analysis Options"
     )
 
     bam_parser.set_defaults(handler=_run_bam_command, _subparser=bam_parser)
@@ -704,6 +865,72 @@ def _add_schema_subparser(subparsers):
     schema_parser.set_defaults(handler=_run_describe_output_command)
 
 
+def _run_plot_command(args):
+    if getattr(args, "handler", None) is None or args.command == "plot":
+        args._subparser.print_help()
+        return 1
+    return args.handler(args)
+
+
+def _add_plot_heatmap_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "heatmap",
+        aliases=["hm"],
+        help="Regenerate the variant heatmap from an existing results CSV",
+        description="Read a vartracker results CSV and regenerate the heatmap outputs.",
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    parser.add_argument(
+        "--outdir",
+        default=None,
+        help="Output directory for regenerated heatmap files (default: results CSV directory)",
+    )
+    parser.add_argument(
+        "--name",
+        default=None,
+        help="Optional plot title prefix (default: use the `name` column if present)",
+    )
+    parser.add_argument(
+        "--literature-csv",
+        default=None,
+        help="Optional literature hits CSV to link from the interactive heatmap",
+    )
+    parser.add_argument(
+        "-m",
+        "--min-snv-freq",
+        action="store",
+        required=False,
+        type=float,
+        default=0.03,
+        help="Minimum allele frequency of SNV variants to keep (default: 0.03)",
+    )
+    parser.add_argument(
+        "-M",
+        "--min-indel-freq",
+        action="store",
+        required=False,
+        type=float,
+        default=0.1,
+        help="Minimum allele frequency of indel variants to keep (default: 0.1)",
+    )
+    heatmap_group = parser.add_argument_group("Heatmap options")
+    _add_heatmap_option_arguments(heatmap_group)
+    parser.set_defaults(handler=_run_plot_heatmap_command)
+
+
+def _add_plot_subparser(subparsers):
+    plot_parser = subparsers.add_parser(
+        "plot",
+        help="Regenerate plots from existing vartracker outputs",
+        description="Regenerate selected plots from an existing vartracker results file.",
+        formatter_class=HelpFormatter,
+    )
+    plot_subparsers = plot_parser.add_subparsers(dest="plot_command")
+    _add_plot_heatmap_subparser(plot_subparsers)
+    plot_parser.set_defaults(handler=_run_plot_command, _subparser=plot_parser)
+
+
 def create_parser():
     """Create and return the top-level argument parser with subcommands."""
 
@@ -719,6 +946,7 @@ def create_parser():
     _add_vcf_subparser(subparsers)
     _add_bam_subparser(subparsers)
     _add_e2e_subparser(subparsers)
+    _add_plot_subparser(subparsers)
     _add_prep_subparser(subparsers)
     _add_schema_subparser(subparsers)
 
@@ -903,9 +1131,9 @@ def _run_vcf_command(args):
                 optional_empty={"reads1", "reads2", "bam"},
             )
 
-            # Apply passage cap if specified
-            if args.passage_cap is not None:
-                input_file = input_file[input_file["sample_number"] <= args.passage_cap]
+            # Apply sample cap if specified
+            if args.sample_cap is not None:
+                input_file = input_file[input_file["sample_number"] <= args.sample_cap]
 
             literature = None
             if args.search_pokay and args.literature_csv is not None:
@@ -1056,8 +1284,6 @@ def _add_e2e_subparser(subparsers):
         aliases=["e2e"],
     )
 
-    _configure_vcf_parser(e2e_parser, include_input_csv=False)
-
     e2e_parser.add_argument(
         "samples_csv",
         nargs="?",
@@ -1102,6 +1328,11 @@ def _add_e2e_subparser(subparsers):
         action="store_true",
         help="Force Snakemake to recompute all targets (forceall)",
         default=False,
+    )
+
+    _configure_vcf_parser(e2e_parser, include_input_csv=False)
+    _move_action_group_after(
+        e2e_parser, "Snakemake options", "Vartracker Analysis Options"
     )
 
     e2e_parser.set_defaults(handler=_run_e2e_command, _subparser=e2e_parser)
@@ -1391,6 +1622,88 @@ def _run_bam_command(args):
             test_context.cleanup()
 
 
+def _run_plot_heatmap_command(args):
+    try:
+        results_csv = Path(args.results_csv).expanduser().resolve()
+        if not results_csv.exists():
+            raise InputValidationError(f"Results CSV not found: {results_csv}")
+
+        outdir = (
+            Path(args.outdir).expanduser().resolve()
+            if args.outdir
+            else results_csv.parent
+        )
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        table = pd.read_csv(results_csv, keep_default_na=False)
+        if table.empty:
+            raise InputValidationError("Results CSV is empty")
+        if "samples" not in table.columns:
+            raise InputValidationError(
+                "Results CSV must contain a 'samples' column to regenerate the heatmap"
+            )
+
+        sample_names = [
+            token.strip()
+            for token in str(table.iloc[0]["samples"]).split(" / ")
+            if token.strip()
+        ]
+        if not sample_names:
+            raise InputValidationError(
+                "Could not determine sample names from the results CSV"
+            )
+
+        project_name = args.name
+        if project_name is None and "name" in table.columns:
+            names = [
+                str(value).strip()
+                for value in table["name"].unique()
+                if str(value).strip()
+            ]
+            if len(names) == 1:
+                project_name = names[0]
+        if project_name is None:
+            project_name = ""
+
+        literature_df = None
+        literature_path = None
+        if args.literature_csv:
+            literature_path = str(Path(args.literature_csv).expanduser().resolve())
+            try:
+                literature_df = pd.read_csv(literature_path)
+            except Exception as exc:
+                raise InputValidationError(
+                    f"Could not read literature CSV: {exc}"
+                ) from exc
+
+        cli_command = getattr(args, "_invocation", None)
+        generate_variant_heatmap(
+            table,
+            sample_names,
+            sample_names,
+            str(outdir),
+            project_name,
+            args.min_snv_freq,
+            args.min_indel_freq,
+            literature_hits=literature_df,
+            literature_table_path=literature_path,
+            cli_command=cli_command,
+            **_collect_heatmap_kwargs(args),
+        )
+        print(f"\nFinished: find results in {outdir}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+    except Exception as exc:
+        print(f"\nUnexpected error: {exc}\n")
+        if getattr(args, "debug", False):
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+
 def _run_generate_command(args):
     directory = Path(args.dir).expanduser()
     output_path = Path(args.out).expanduser().resolve()
@@ -1608,11 +1921,11 @@ def _process_files(
         pname,
         args.min_snv_freq,
         args.min_indel_freq,
-        excluded_consequence_types=_parse_csv_option_list(args.heatmap_exclude),
         gene_lengths=gene_lengths,
         literature_hits=literature_hits_df,
         literature_table_path=literature_full_csv_path,
         cli_command=cli_command,
+        **_collect_heatmap_kwargs(args),
     )
 
     # Write specialized tables

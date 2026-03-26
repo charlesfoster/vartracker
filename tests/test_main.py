@@ -274,7 +274,7 @@ def test_search_pokay_retains_parsed_database_csv(tmp_path, monkeypatch, minimal
     assert (outdir / "literature_database.csv").exists()
 
 
-def test_vcf_heatmap_exclude_option_is_forwarded_to_heatmap(
+def test_vcf_heatmap_options_are_forwarded_to_heatmap(
     monkeypatch, tmp_path, minimal_vcf
 ):
     coverage_path = tmp_path / "sample.cov.txt"
@@ -313,7 +313,7 @@ def test_vcf_heatmap_exclude_option_is_forwarded_to_heatmap(
     recorded = {}
 
     def fake_heatmap(*args, **kwargs):
-        recorded["excluded"] = kwargs.get("excluded_consequence_types")
+        recorded.update(kwargs)
 
     monkeypatch.setattr(main_module, "generate_variant_heatmap", fake_heatmap)
 
@@ -348,13 +348,95 @@ def test_vcf_heatmap_exclude_option_is_forwarded_to_heatmap(
             str(csv_path),
             "--outdir",
             str(tmp_path / "results"),
-            "--heatmap-exclude",
-            "synonymous,frameshift,stop_gained",
+            "--heatmap-aa-exclude",
+            "synonymous,*frameshift*,stop_gained",
+            "--heatmap-aa-include",
+            "missense",
+            "--heatmap-only-persistent",
+            "--heatmap-only-new",
+            "--heatmap-gene-include",
+            "S",
+            "--heatmap-gene-exclude",
+            "N",
+            "--heatmap-variant-type",
+            "snp",
+            "--heatmap-qc",
+            "PASS",
+            "--heatmap-min-persistence",
+            "2",
+            "--heatmap-min-max-af",
+            "0.4",
+            "--heatmap-min-sample-af",
+            "0.3",
+            "--heatmap-sample-subset",
+            "Sample1",
+            "--heatmap-hide-singletons",
+            "--heatmap-min-depth",
+            "20",
         ]
     )
 
     assert exit_code == 0
-    assert recorded["excluded"] == ["synonymous", "frameshift", "stop_gained"]
+    assert recorded["excluded_consequence_types"] == [
+        "synonymous",
+        "*frameshift*",
+        "stop_gained",
+    ]
+    assert recorded["included_consequence_types"] == ["missense"]
+    assert recorded["include_joint"] is False
+    assert recorded["only_persistent"] is True
+    assert recorded["only_new"] is True
+    assert recorded["gene_include"] == ["S"]
+    assert recorded["gene_exclude"] == ["N"]
+    assert recorded["variant_type_include"] == ["snp"]
+    assert recorded["qc_include"] == ["PASS"]
+    assert recorded["min_persistence"] == 2
+    assert recorded["min_max_af"] == 0.4
+    assert recorded["min_sample_af"] == 0.3
+    assert recorded["sample_subset"] == ["Sample1"]
+    assert recorded["hide_singletons"] is True
+    assert recorded["min_depth"] == 20
+
+
+def test_plot_heatmap_replots_results_csv(monkeypatch, tmp_path):
+    results_csv = tmp_path / "results.csv"
+    results_csv.write_text(
+        "samples,name,alt_freq,variant_site_depth,presence_absence,variant_status,persistence_status,type_of_variant,type_of_change,gene,variant,start\n"
+        "P0 / P1,Example,0.0 / 0.5,0 / 100,N / Y,new,new_persistent,snp,missense,S,A266C,266\n",
+        encoding="utf-8",
+    )
+
+    recorded = {}
+
+    def fake_heatmap(*args, **kwargs):
+        recorded["table"] = args[0]
+        recorded["sample_names"] = args[1]
+        recorded["outdir"] = args[3]
+        recorded["project_name"] = args[4]
+        recorded["kwargs"] = kwargs
+
+    monkeypatch.setattr(main_module, "generate_variant_heatmap", fake_heatmap)
+
+    outdir = tmp_path / "plots"
+    exit_code = main_module.main(
+        [
+            "plot",
+            "heatmap",
+            str(results_csv),
+            "--outdir",
+            str(outdir),
+            "--heatmap-aa-exclude",
+            "*frameshift*",
+            "--heatmap-include-joint",
+        ]
+    )
+
+    assert exit_code == 0
+    assert list(recorded["sample_names"]) == ["P0", "P1"]
+    assert recorded["outdir"] == str(outdir)
+    assert recorded["project_name"] == "Example"
+    assert recorded["kwargs"]["excluded_consequence_types"] == ["*frameshift*"]
+    assert recorded["kwargs"]["include_joint"] is True
 
 
 def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):

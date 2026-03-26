@@ -232,6 +232,79 @@ def test_prepare_variant_heatmap_matrix_excludes_wildcard_consequence_types():
     assert list(matrix.index) == ["S:N501Y\n(A23063T)"]
 
 
+def test_prepare_variant_heatmap_matrix_applies_extended_filters():
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "S",
+                "amino_acid_consequence": "D215G",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "variant_status": "new",
+                "persistence_status": "new_persistent",
+                "overall_variant_qc": "PASS",
+                "presence_absence": "N / Y / Y",
+                "alt_freq": "0.0 / 0.6 / 0.7",
+                "variant_site_depth": "0 / 120 / 125",
+                "samples": "P0 / P1 / P2",
+                "variant": "A22206G",
+                "start": 22206,
+            },
+            {
+                "gene": "S",
+                "amino_acid_consequence": "145fs",
+                "nsp_aa_change": "",
+                "type_of_change": "joint_frameshift",
+                "type_of_variant": "indel",
+                "variant_status": "new",
+                "persistence_status": "new_persistent",
+                "overall_variant_qc": "PASS",
+                "presence_absence": "N / N / Y",
+                "alt_freq": "0.0 / 0.0 / 0.8",
+                "variant_site_depth": "0 / 0 / 130",
+                "samples": "P0 / P1 / P2",
+                "variant": "A22029-",
+                "start": 22029,
+            },
+            {
+                "gene": "N",
+                "amino_acid_consequence": "R203K",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "variant_status": "original",
+                "persistence_status": "original_retained",
+                "overall_variant_qc": "FAIL",
+                "presence_absence": "Y / Y / Y",
+                "alt_freq": "0.5 / 0.5 / 0.5",
+                "variant_site_depth": "110 / 115 / 120",
+                "samples": "P0 / P1 / P2",
+                "variant": "G28881A",
+                "start": 28881,
+            },
+        ]
+    )
+
+    matrix = _prepare_variant_heatmap_matrix(
+        table,
+        ["P0", "P1", "P2"],
+        0.2,
+        0.2,
+        only_new=True,
+        gene_include=["S"],
+        variant_type_include=["snp"],
+        qc_include=["pass"],
+        min_persistence=2,
+        min_max_af=0.6,
+        sample_subset=["P1", "P2"],
+        hide_singletons=True,
+        min_depth=100,
+    )
+
+    assert list(matrix.index) == ["S:D215G\n(A22206G)"]
+
+
 def test_process_joint_variants_only_adds_single_joint_prefix(tmp_path):
     csv_path = tmp_path / "results.csv"
     pd.DataFrame(
