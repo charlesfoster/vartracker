@@ -461,6 +461,173 @@ def test_plot_heatmap_replots_results_csv(monkeypatch, tmp_path):
     assert recorded["kwargs"]["include_joint"] is True
 
 
+def _write_plot_results_csv(path: Path, n_variants: int = 4) -> None:
+    rows = [
+        "samples,sample_number,name,alt_freq,per_sample_variant_qc,presence_absence,variant_status,persistence_status,type_of_variant,type_of_change,gene,variant,amino_acid_consequence,nsp_aa_change,start,reference"
+    ]
+    for idx in range(n_variants):
+        gene = "S" if idx % 2 == 0 else "N"
+        aa = f"{gene}:V{idx + 1}A"
+        effect = "missense" if idx % 3 else "synonymous"
+        persistence = "new_persistent" if idx % 2 == 0 else "new_transient"
+        reference = "PMID123" if idx == 1 else ""
+        rows.append(
+            "P0 / P1 / P2 / P3,"
+            "0 / 1 / 2 / 3,"
+            "Example,"
+            f"0.0 / 0.{idx + 2} / 0.{idx + 3} / 0.{idx + 4},"
+            "P / P / P / P,"
+            "N / Y / Y / Y,"
+            "new,"
+            f"{persistence},"
+            "snp,"
+            f"{effect},"
+            f"{gene},"
+            f"A{100 + idx}G,"
+            f"{aa},,"
+            f"{100 + idx},"
+            f"{reference}"
+        )
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_plot_trajectory_variants_override_auto_selection(monkeypatch, tmp_path):
+    results_csv = tmp_path / "results.csv"
+    _write_plot_results_csv(results_csv, n_variants=6)
+
+    recorded = {}
+
+    def fake_plot(*args, **kwargs):
+        recorded["selected_variants"] = kwargs["selected_variants"]
+
+    monkeypatch.setattr(main_module, "plot_variant_trajectory", fake_plot)
+
+    exit_code = main_module.main(
+        [
+            "plot",
+            "trajectory",
+            str(results_csv),
+            "--variants",
+            "S:V3A,N:V2A",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["selected_variants"] == ["S:V3A", "N:V2A"]
+
+
+def test_plot_trajectory_threshold_options_are_forwarded(monkeypatch, tmp_path):
+    results_csv = tmp_path / "results.csv"
+    _write_plot_results_csv(results_csv, n_variants=6)
+
+    recorded = {}
+
+    def fake_plot(*args, **kwargs):
+        recorded.update(kwargs)
+
+    monkeypatch.setattr(main_module, "plot_variant_trajectory", fake_plot)
+
+    exit_code = main_module.main(
+        [
+            "plot",
+            "trajectory",
+            str(results_csv),
+            "--thresholds",
+            "0.5,0.9",
+            "--label-threshold-crossers",
+            "--crossing-rule",
+            "strictly_above",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["thresholds"] == [0.5, 0.9]
+    assert recorded["label_threshold_crossers"] is True
+    assert recorded["crossing_rule"] == "strictly_above"
+
+
+def test_plot_trajectory_crossing_only_requires_thresholds(tmp_path):
+    results_csv = tmp_path / "results.csv"
+    _write_plot_results_csv(results_csv, n_variants=4)
+
+    exit_code = main_module.main(
+        ["plot", "trajectory", str(results_csv), "--crossing-only"]
+    )
+
+    assert exit_code == 1
+
+
+def test_plot_trajectory_crossing_only_filters_variants(monkeypatch, tmp_path):
+    results_csv = tmp_path / "results.csv"
+    _write_plot_results_csv(results_csv, n_variants=6)
+
+    recorded = {}
+
+    def fake_plot(summary, long_df, **kwargs):
+        recorded["selected_variants"] = kwargs["selected_variants"]
+        recorded["summary_variant_ids"] = list(summary["variant_id"])
+
+    monkeypatch.setattr(main_module, "plot_variant_trajectory", fake_plot)
+
+    exit_code = main_module.main(
+        [
+            "plot",
+            "trajectory",
+            str(results_csv),
+            "--thresholds",
+            "0.5",
+            "--crossing-only",
+        ]
+    )
+
+    assert exit_code == 0
+    assert all(
+        variant in recorded["summary_variant_ids"]
+        for variant in recorded["selected_variants"]
+    )
+
+
+def test_plot_turnover_uses_all_filtered_variants_by_default(monkeypatch, tmp_path):
+    results_csv = tmp_path / "results.csv"
+    _write_plot_results_csv(results_csv, n_variants=5)
+
+    recorded = {}
+
+    def fake_turnover(summary, long_df, **kwargs):
+        recorded["summary_count"] = len(summary)
+        recorded["variant_ids"] = list(summary["variant_id"])
+
+    monkeypatch.setattr(main_module, "plot_variant_turnover", fake_turnover)
+
+    exit_code = main_module.main(["plot", "turnover", str(results_csv), "--gene", "S"])
+
+    assert exit_code == 0
+    assert recorded["summary_count"] == 3
+    assert all(variant.startswith("S:") for variant in recorded["variant_ids"])
+
+
+def test_plot_commands_auto_limit_variants_by_top_n(monkeypatch, tmp_path):
+    results_csv = tmp_path / "results.csv"
+    _write_plot_results_csv(results_csv, n_variants=20)
+
+    recorded = {}
+
+    def fake_trajectory(*args, **kwargs):
+        recorded["trajectory"] = kwargs["selected_variants"]
+
+    def fake_lifespan(*args, **kwargs):
+        recorded["lifespan"] = kwargs["selected_variants"]
+
+    monkeypatch.setattr(main_module, "plot_variant_trajectory", fake_trajectory)
+    monkeypatch.setattr(main_module, "plot_variant_lifespan", fake_lifespan)
+
+    assert main_module.main(["plot", "trajectory", str(results_csv)]) == 0
+    assert main_module.main(["plot", "lifespan", str(results_csv)]) == 0
+
+    assert len(recorded["trajectory"]) == main_module.DEFAULT_TRAJECTORY_TOP_N
+    assert len(recorded["lifespan"]) == main_module.DEFAULT_LIFESPAN_TOP_N
+
+
 def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     updated_csv = tmp_path / "samples_updated.csv"
     vcf_out = tmp_path / "vcf.gz"

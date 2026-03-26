@@ -244,6 +244,13 @@ RESULTS_SCHEMA: list[dict[str, str]] = [
         "values": "",
     },
     {
+        "name": "sample_number",
+        "type": "string (slash-separated)",
+        "description": "Sample ordering values corresponding to per-sample fields.",
+        "units": "",
+        "values": "integer-like sample numbers",
+    },
+    {
         "name": "total_genome_coverage",
         "type": "string (slash-separated)",
         "description": "Total genome coverage (bases covered) per sample.",

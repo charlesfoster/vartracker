@@ -207,6 +207,18 @@ vartracker plot heatmap results/results.csv \
   --heatmap-aa-exclude "*frameshift*" \
   --outdir results/replots
 
+# Plot whole-dataset turnover from an existing results file
+vartracker plot turnover results/results.csv
+
+# Plot selected variant trajectories from an existing results file
+vartracker plot trajectory results/results.csv \
+  --variants "S:D614G,S:E484K,S:N501Y"
+
+# Plot takeover-style trajectories using AF thresholds
+vartracker plot trajectory results/results.csv \
+  --thresholds 0.5,0.9 \
+  --crossing-only
+
 # Generate a template spreadsheet for a directory of files
 vartracker prepare spreadsheet --mode e2e --dir data/passaging --out inputs.csv
 
@@ -260,6 +272,9 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
   `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
 - `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
 - `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV.
+- `vartracker plot trajectory` – plot allele-frequency trajectories for a selected or auto-ranked subset of variants, optionally in takeover mode using threshold lines and threshold-based filtering.
+- `vartracker plot turnover` – plot new-versus-lost longitudinal turnover from the filtered result set.
+- `vartracker plot lifespan` – plot first-to-last detection spans for a selected or auto-ranked subset of variants.
 
 Heatmap filtering:
 - By default, all consequence classes are included except joint variants. Use `--heatmap-include-joint` to show joint variants.
@@ -278,6 +293,38 @@ Heatmap filtering:
 - `--heatmap-hide-singletons`: hide variants present in only one included sample.
 - `--heatmap-min-depth`: minimum site depth a variant must reach in at least one included sample.
 - Example: `--heatmap-aa-exclude "synonymous,*frameshift*,stop_gained"`
+
+Standalone plot filtering:
+- `--gene`, `--effect`, `--min-af`, `--max-af`: restrict the plotted result set before ranking/selection.
+- `--variants` or `--variant-file`: explicitly choose variants and preserve that order.
+- `--sample-min`, `--sample-max`: restrict the passage/sample-number window.
+- `--persistent-only` and `--new-only`: keep only persistent new variants or only variants with `variant_status == new`.
+- `trajectory` and `lifespan` auto-select a limited subset by default (`--top-n`) to stay readable.
+- `turnover` uses all filtered variants by default and is also written automatically during the main `vcf`/`bam`/`end-to-end` workflows as `variant_turnover_plot.pdf`.
+
+Standalone plot output:
+- `--out`: write to an exact file path.
+- `--outdir`: write beside the results CSV or into the chosen directory using deterministic names such as `variant_trajectory_plot.pdf`.
+- `--format`: choose `pdf`, `png`, or `svg`.
+- `--dpi`: set raster output resolution.
+
+Trajectory threshold mode:
+- `--thresholds`: draw horizontal AF threshold lines, e.g. `0.5,0.9`.
+- `--crossing-only`: keep only variants crossing at least one supplied threshold.
+- `--label-threshold-crossers`: label only threshold-crossing variants to reduce clutter.
+- `--crossing-rule`: choose whether threshold equality counts (`at_or_above`) or requires a strict exceedance (`strictly_above`).
+
+Standalone plot examples:
+- `vartracker plot turnover results.csv`
+- `vartracker plot trajectory results.csv --variants "S:D614G,S:E484K"`
+- `vartracker plot trajectory results.csv --thresholds 0.5,0.9`
+- `vartracker plot trajectory results.csv --thresholds 0.5,0.9 --crossing-only`
+- `vartracker plot trajectory results.csv --thresholds 0.5,0.9 --crossing-only --label-threshold-crossers`
+- `vartracker plot lifespan results.csv --top-n 20 --persistent-only`
+
+Note:
+- The standalone `plot` commands require `results.csv` files written by current vartracker versions, which now include a slash-separated `sample_number` column for stable passage ordering.
+
 - `vartracker prepare spreadsheet` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
   and `--dry-run` to preview without writing a file.
 - `vartracker prepare reference` – build a merged FASTA/GFF3 bundle from GenBank nucleotide accessions.

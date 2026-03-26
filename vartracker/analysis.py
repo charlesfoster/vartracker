@@ -39,7 +39,9 @@ def _ensure_joint_prefix(change_type: object) -> str:
 
 
 def _parse_slash_separated_tokens(value: object) -> list[str]:
-    return [token.strip() for token in str(value or "").split(" / ")]
+    if value is None:
+        return []
+    return [token.strip() for token in str(value).split(" / ")]
 
 
 def _match_any_pattern(value: object, patterns: Sequence[str]) -> bool:

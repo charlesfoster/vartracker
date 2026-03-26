@@ -16,6 +16,7 @@ import tempfile
 from contextlib import ExitStack
 from importlib import resources
 from pathlib import Path
+from typing import Sequence
 
 import pandas as pd
 
@@ -39,6 +40,22 @@ from .analysis import (
     plot_gene_table,
     generate_variant_heatmap,
     search_literature,
+)
+from .plotting import (
+    DEFAULT_LIFESPAN_TOP_N,
+    DEFAULT_TRAJECTORY_TOP_N,
+    apply_shared_plot_filters,
+    auto_select_variants,
+    collect_explicit_variants,
+    get_threshold_crossing_variants,
+    load_results_table,
+    parse_thresholds,
+    plot_variant_lifespan,
+    plot_variant_trajectory,
+    plot_variant_turnover,
+    prepare_plot_inputs,
+    _project_name_from_results,
+    resolve_plot_output_path,
 )
 from ._version import __version__
 from .provenance import (
@@ -260,6 +277,150 @@ def _collect_heatmap_kwargs(args) -> dict[str, object]:
         "hide_singletons": getattr(args, "heatmap_hide_singletons", False),
         "min_depth": getattr(args, "heatmap_min_depth", None),
     }
+
+
+def _add_shared_plot_filter_arguments(group: argparse._ArgumentGroup) -> None:
+    group.add_argument("--gene", default=None, help="Restrict to a single gene")
+    group.add_argument(
+        "--effect",
+        default="",
+        help="Comma-separated effect classes to include (e.g. missense,synonymous)",
+    )
+    group.add_argument(
+        "--min-af",
+        type=float,
+        default=None,
+        help="Minimum max allele frequency across included samples",
+    )
+    group.add_argument(
+        "--max-af",
+        type=float,
+        default=None,
+        help="Maximum max allele frequency across included samples",
+    )
+    group.add_argument(
+        "--variants",
+        default="",
+        help="Comma-separated variant identifiers to plot, in order",
+    )
+    group.add_argument(
+        "--variant-file",
+        default=None,
+        help="Path to a file with one variant identifier per line",
+    )
+    group.add_argument(
+        "--sample-min",
+        type=int,
+        default=None,
+        help="Minimum sample_number to include",
+    )
+    group.add_argument(
+        "--sample-max",
+        type=int,
+        default=None,
+        help="Maximum sample_number to include",
+    )
+    group.add_argument(
+        "--include-synonymous",
+        action="store_true",
+        default=True,
+        help="Preserve synonymous variants in standalone plot filtering",
+    )
+    group.add_argument(
+        "--persistent-only",
+        action="store_true",
+        default=False,
+        help="Only include variants with persistence_status == new_persistent",
+    )
+    group.add_argument(
+        "--new-only",
+        action="store_true",
+        default=False,
+        help="Only include variants with variant_status == new",
+    )
+
+
+def _add_plot_output_arguments(parser: argparse.ArgumentParser) -> None:
+    output_group = parser.add_argument_group("Output")
+    output_group.add_argument(
+        "--out", default=None, help="Write the plot to this exact path"
+    )
+    output_group.add_argument(
+        "--outdir",
+        default=None,
+        help="Output directory for plot files (default: beside results.csv)",
+    )
+    output_group.add_argument(
+        "--format",
+        choices=["pdf", "png", "svg"],
+        default="pdf",
+        help="Output format when using --outdir or default naming (default: pdf)",
+    )
+    output_group.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="Output DPI (default: 300)",
+    )
+
+
+def _collect_shared_plot_kwargs(args) -> dict[str, object]:
+    return {
+        "gene": getattr(args, "gene", None),
+        "effects": _parse_csv_option_list(getattr(args, "effect", "")),
+        "min_af": getattr(args, "min_af", None),
+        "max_af": getattr(args, "max_af", None),
+        "variants": collect_explicit_variants(
+            getattr(args, "variants", ""), getattr(args, "variant_file", None)
+        ),
+        "sample_min": getattr(args, "sample_min", None),
+        "sample_max": getattr(args, "sample_max", None),
+        "include_synonymous": getattr(args, "include_synonymous", True),
+        "persistent_only": getattr(args, "persistent_only", False),
+        "new_only": getattr(args, "new_only", False),
+    }
+
+
+def _resolve_plot_variants(
+    summary: pd.DataFrame,
+    *,
+    explicit_variants: Sequence[str],
+    top_n: int,
+    prefer_crossing: bool = False,
+    thresholds: Sequence[float] | None = None,
+) -> list[str]:
+    if explicit_variants:
+        selected = []
+        seen = set()
+        for requested in explicit_variants:
+            match = summary[
+                summary.apply(
+                    lambda row: requested
+                    in {row["variant_id"], row["variant_label"], row["variant_name"]},
+                    axis=1,
+                )
+            ]
+            if match.empty:
+                continue
+            variant_id = str(match.iloc[0]["variant_id"])
+            if variant_id not in seen:
+                selected.append(variant_id)
+                seen.add(variant_id)
+        if not selected:
+            raise ProcessingError(
+                "None of the requested variants were found in the filtered results"
+            )
+        return selected
+
+    selected = auto_select_variants(
+        summary,
+        top_n=top_n,
+        prefer_crossing=prefer_crossing,
+        thresholds=thresholds,
+    )
+    if not selected:
+        raise ProcessingError("No variants were available for plotting")
+    return selected
 
 
 def _print_dependency_error(error: DependencyError) -> None:
@@ -883,6 +1044,173 @@ def _run_plot_command(args):
     return args.handler(args)
 
 
+def _prepare_standalone_plot_inputs(args):
+    results_csv = Path(args.results_csv).expanduser().resolve()
+    table = load_results_table(results_csv)
+    summary, long_df, sample_names, sample_numbers = prepare_plot_inputs(table)
+    shared_kwargs = _collect_shared_plot_kwargs(args)
+    summary, long_df = apply_shared_plot_filters(summary, long_df, **shared_kwargs)
+    project_name = _project_name_from_results(table, getattr(args, "name", None))
+    return (
+        results_csv,
+        table,
+        summary,
+        long_df,
+        sample_names,
+        sample_numbers,
+        project_name,
+        shared_kwargs,
+    )
+
+
+def _run_plot_trajectory_command(args):
+    try:
+        (
+            results_csv,
+            _table,
+            summary,
+            long_df,
+            _sample_names,
+            _sample_numbers,
+            project_name,
+            shared_kwargs,
+        ) = _prepare_standalone_plot_inputs(args)
+        thresholds = parse_thresholds(args.thresholds)
+        if args.crossing_only and not thresholds:
+            raise InputValidationError("--crossing-only requires --thresholds")
+        if args.crossing_only:
+            summary = get_threshold_crossing_variants(
+                summary,
+                long_df,
+                thresholds,
+                crossing_rule=args.crossing_rule,
+            )
+            long_df = long_df[long_df["variant_id"].isin(summary["variant_id"])]
+            if summary.empty:
+                raise ProcessingError("No variants crossed the requested thresholds")
+        selected = _resolve_plot_variants(
+            summary,
+            explicit_variants=shared_kwargs["variants"],
+            top_n=args.top_n,
+            prefer_crossing=bool(thresholds),
+            thresholds=thresholds,
+        )
+        output_path = resolve_plot_output_path(
+            results_csv,
+            out=args.out,
+            outdir=args.outdir,
+            fmt=args.format,
+            filename="variant_trajectory_plot",
+        )
+        plot_variant_trajectory(
+            summary,
+            long_df,
+            selected_variants=selected,
+            output_path=output_path,
+            thresholds=thresholds,
+            title=args.title
+            or (f"{project_name}: variant trajectories" if project_name else None),
+            width=args.width,
+            height=args.height,
+            dpi=args.dpi,
+            label_lines=args.label_lines,
+            label_threshold_crossers=args.label_threshold_crossers,
+            crossing_rule=args.crossing_rule,
+        )
+        print(f"\nFinished: wrote {output_path}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+
+def _run_plot_turnover_command(args):
+    try:
+        (
+            results_csv,
+            _table,
+            summary,
+            long_df,
+            _sample_names,
+            _sample_numbers,
+            project_name,
+            shared_kwargs,
+        ) = _prepare_standalone_plot_inputs(args)
+        if shared_kwargs["variants"]:
+            summary = summary[summary["variant_id"].isin(shared_kwargs["variants"])]
+            long_df = long_df[long_df["variant_id"].isin(summary["variant_id"])]
+            if summary.empty:
+                raise ProcessingError(
+                    "None of the requested variants were found in the filtered results"
+                )
+        output_path = resolve_plot_output_path(
+            results_csv,
+            out=args.out,
+            outdir=args.outdir,
+            fmt=args.format,
+            filename="variant_turnover_plot",
+        )
+        plot_variant_turnover(
+            summary,
+            long_df,
+            output_path=output_path,
+            title=args.title
+            or (f"{project_name}: variant turnover" if project_name else None),
+            width=args.width,
+            height=args.height,
+            dpi=args.dpi,
+            count_mode=args.count_mode,
+        )
+        print(f"\nFinished: wrote {output_path}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+
+def _run_plot_lifespan_command(args):
+    try:
+        (
+            results_csv,
+            _table,
+            summary,
+            _long_df,
+            _sample_names,
+            _sample_numbers,
+            project_name,
+            shared_kwargs,
+        ) = _prepare_standalone_plot_inputs(args)
+        selected = _resolve_plot_variants(
+            summary,
+            explicit_variants=shared_kwargs["variants"],
+            top_n=args.top_n,
+        )
+        output_path = resolve_plot_output_path(
+            results_csv,
+            out=args.out,
+            outdir=args.outdir,
+            fmt=args.format,
+            filename="variant_lifespan_plot",
+        )
+        plot_variant_lifespan(
+            summary,
+            selected_variants=selected,
+            output_path=output_path,
+            title=args.title
+            or (f"{project_name}: variant lifespan" if project_name else None),
+            width=args.width,
+            height=args.height,
+            dpi=args.dpi,
+            sort_by=args.sort_by,
+            annotate_class=args.annotate_class,
+        )
+        print(f"\nFinished: wrote {output_path}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+
 def _add_plot_heatmap_subparser(subparsers):
     parser = subparsers.add_parser(
         "heatmap",
@@ -930,6 +1258,128 @@ def _add_plot_heatmap_subparser(subparsers):
     parser.set_defaults(handler=_run_plot_heatmap_command)
 
 
+def _add_plot_trajectory_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "trajectory",
+        help="Plot selected variant trajectories from an existing results CSV",
+        description="Generate allele-frequency trajectory plots from a vartracker results CSV.",
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    filter_group = parser.add_argument_group("Filtering")
+    _add_shared_plot_filter_arguments(filter_group)
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=DEFAULT_TRAJECTORY_TOP_N,
+        help=f"Auto-select up to this many variants when --variants is not used (default: {DEFAULT_TRAJECTORY_TOP_N})",
+    )
+    parser.add_argument(
+        "--label-lines",
+        action="store_true",
+        default=False,
+        help="Add end labels to plotted lines",
+    )
+    parser.add_argument(
+        "--thresholds",
+        default="",
+        help="Comma-separated AF thresholds to draw, e.g. 0.5,0.9",
+    )
+    parser.add_argument(
+        "--crossing-only",
+        action="store_true",
+        default=False,
+        help="Only keep variants crossing at least one requested threshold",
+    )
+    parser.add_argument(
+        "--label-threshold-crossers",
+        action="store_true",
+        default=False,
+        help="Label variants that cross at least one supplied threshold",
+    )
+    parser.add_argument(
+        "--crossing-rule",
+        choices=["at_or_above", "strictly_above"],
+        default="at_or_above",
+        help="How to evaluate exact threshold matches (default: at_or_above)",
+    )
+    parser.add_argument("--title", default=None, help="Optional plot title")
+    parser.add_argument(
+        "--width", type=float, default=8.5, help="Figure width in inches"
+    )
+    parser.add_argument(
+        "--height", type=float, default=5.5, help="Figure height in inches"
+    )
+    _add_plot_output_arguments(parser)
+    parser.set_defaults(handler=_run_plot_trajectory_command)
+
+
+def _add_plot_turnover_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "turnover",
+        help="Plot longitudinal variant turnover from an existing results CSV",
+        description="Generate new-versus-lost turnover summaries from a vartracker results CSV.",
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    filter_group = parser.add_argument_group("Filtering")
+    _add_shared_plot_filter_arguments(filter_group)
+    parser.add_argument(
+        "--count-mode",
+        choices=["count", "sum_af"],
+        default="count",
+        help="Aggregate turnover as counts or summed allele frequencies (default: count)",
+    )
+    parser.add_argument("--title", default=None, help="Optional plot title")
+    parser.add_argument(
+        "--width", type=float, default=8.5, help="Figure width in inches"
+    )
+    parser.add_argument(
+        "--height", type=float, default=5.0, help="Figure height in inches"
+    )
+    _add_plot_output_arguments(parser)
+    parser.set_defaults(handler=_run_plot_turnover_command)
+
+
+def _add_plot_lifespan_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "lifespan",
+        help="Plot first-to-last detection spans from an existing results CSV",
+        description="Generate a horizontal lifespan plot from a vartracker results CSV.",
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    filter_group = parser.add_argument_group("Filtering")
+    _add_shared_plot_filter_arguments(filter_group)
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=DEFAULT_LIFESPAN_TOP_N,
+        help=f"Auto-select up to this many variants when --variants is not used (default: {DEFAULT_LIFESPAN_TOP_N})",
+    )
+    parser.add_argument(
+        "--sort-by",
+        choices=["first_seen", "last_seen", "duration", "max_af"],
+        default="duration",
+        help="Sort plotted variants by this summary metric (default: duration)",
+    )
+    parser.add_argument(
+        "--annotate-class",
+        action="store_true",
+        default=False,
+        help="Append variant/new and persistent/transient classes to labels",
+    )
+    parser.add_argument("--title", default=None, help="Optional plot title")
+    parser.add_argument(
+        "--width", type=float, default=8.5, help="Figure width in inches"
+    )
+    parser.add_argument(
+        "--height", type=float, default=6.0, help="Figure height in inches"
+    )
+    _add_plot_output_arguments(parser)
+    parser.set_defaults(handler=_run_plot_lifespan_command)
+
+
 def _add_plot_subparser(subparsers):
     plot_parser = subparsers.add_parser(
         "plot",
@@ -939,6 +1389,9 @@ def _add_plot_subparser(subparsers):
     )
     plot_subparsers = plot_parser.add_subparsers(dest="plot_command")
     _add_plot_heatmap_subparser(plot_subparsers)
+    _add_plot_trajectory_subparser(plot_subparsers)
+    _add_plot_turnover_subparser(plot_subparsers)
+    _add_plot_lifespan_subparser(plot_subparsers)
     plot_parser.set_defaults(handler=_run_plot_command, _subparser=plot_parser)
 
 
@@ -1241,6 +1694,9 @@ def _run_vcf_command(args):
                 ),
                 "mutations_per_gene_plot": os.path.join(
                     args.outdir, "mutations_per_gene.pdf"
+                ),
+                "variant_turnover_plot": os.path.join(
+                    args.outdir, "variant_turnover_plot.pdf"
                 ),
                 "variant_allele_frequency_heatmap_html": os.path.join(
                     args.outdir, "variant_allele_frequency_heatmap.html"
@@ -1893,6 +2349,10 @@ def _process_files(
     else:
         pname = ""
 
+    table["sample_number"] = " / ".join(
+        [str(value) for value in list(input_file["sample_number"])]
+    )
+
     table = _drop_exact_duplicate_result_rows(table)
 
     # Write initial results
@@ -1937,6 +2397,14 @@ def _process_files(
 
     gene_table = generate_gene_table(table, gene_lengths)
     plot_gene_table(gene_table, pname, args.outdir)
+    plot_variant_turnover(
+        *apply_shared_plot_filters(
+            *prepare_plot_inputs(table)[:2],
+            include_synonymous=True,
+        ),
+        output_path=os.path.join(args.outdir, "variant_turnover_plot.pdf"),
+        title=f"{pname}: variant turnover" if pname else None,
+    )
     generate_variant_heatmap(
         table,
         sample_names,
