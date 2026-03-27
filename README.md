@@ -210,6 +210,12 @@ vartracker plot heatmap results/results.csv \
 # Plot whole-dataset turnover from an existing results file
 vartracker plot turnover results/results.csv
 
+# Plot collapsed variant frequencies along the genome
+vartracker plot genome results/results.csv
+
+# Zoom to a gene region, optionally using amino-acid coordinates
+vartracker plot genome results/results.csv --gene F --aa-scale
+
 # Plot selected variant trajectories from an existing results file
 vartracker plot trajectory results/results.csv \
   --variants "S:D614G,S:E484K,S:N501Y"
@@ -272,6 +278,7 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
   `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
 - `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
 - `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV.
+- `vartracker plot genome` – plot SNP positions along the genome or a selected gene region using all observed allele-frequency values for each variant.
 - `vartracker plot trajectory` – plot allele-frequency trajectories for a selected or auto-ranked subset of variants, optionally in takeover mode using threshold lines and threshold-based filtering.
 - `vartracker plot turnover` – plot new-versus-lost longitudinal turnover from the filtered result set.
 - `vartracker plot lifespan` – plot first-to-last detection spans for a selected or auto-ranked subset of variants.
@@ -301,12 +308,20 @@ Standalone plot filtering:
 - `--persistent-only` and `--new-only`: keep only persistent new variants or only variants with `variant_status == new`.
 - `trajectory` and `lifespan` auto-select a limited subset by default (`--top-n`) to stay readable.
 - `turnover` uses all filtered variants by default and is also written automatically during the main `vcf`/`bam`/`end-to-end` workflows as `variant_turnover_plot.pdf`.
+- `genome` uses SNPs only by default, keeps all observed allele-frequency values for each plotted variant, and writes `variant_genome_plot.pdf` during the main workflows.
 
 Standalone plot output:
 - `--out`: write to an exact file path.
-- `--outdir`: write beside the results CSV or into the chosen directory using deterministic names such as `variant_trajectory_plot.pdf`.
+- `--outdir`: write beside the results CSV or into the chosen directory using deterministic names such as `variant_trajectory_plot.pdf` or `variant_genome_plot.pdf`.
 - `--format`: choose `pdf`, `png`, or `svg`.
 - `--dpi`: set raster output resolution.
+
+Genome plot options:
+- `--gene`: zoom to a single gene region.
+- `--aa-scale`: with `--gene`, use amino-acid coordinates on the x-axis.
+- `--focus-coords`: highlight nucleotide or amino-acid coordinate ranges, depending on the current x-axis mode.
+- `--include-indels`: opt in to plotting indels too. This may be ambiguous or hard to interpret.
+- The standalone genome plot auto-discovers `reference_features.json` beside `results.csv`; workflow runs generate this sidecar automatically.
 
 Trajectory threshold mode:
 - `--thresholds`: draw horizontal AF threshold lines, e.g. `0.5,0.9`.
@@ -315,6 +330,11 @@ Trajectory threshold mode:
 - `--crossing-rule`: choose whether threshold equality counts (`at_or_above`) or requires a strict exceedance (`strictly_above`).
 
 Standalone plot examples:
+- `vartracker plot genome results.csv`
+- `vartracker plot genome results.csv --gene F`
+- `vartracker plot genome results.csv --gene F --aa-scale`
+- `vartracker plot genome results.csv --focus-coords "150-300,900-1800"`
+- `vartracker plot genome results.csv --gene F --aa-scale --focus-coords "50-120,180-220"`
 - `vartracker plot turnover results.csv`
 - `vartracker plot trajectory results.csv --variants "S:D614G,S:E484K"`
 - `vartracker plot trajectory results.csv --thresholds 0.5,0.9`

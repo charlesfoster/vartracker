@@ -1,5 +1,350 @@
-........................................................................ [ 87%]
-..........                                                               [100%]
+............................................FFF......................... [ 82%]
+...............                                                          [100%]
+=================================== FAILURES ===================================
+______________________ test_main_resolves_relative_paths _______________________
+
+tmp_path = PosixPath('/private/var/folders/gq/5znbqdq51158c_xf1391nj1m0000gn/T/pytest-of-cfos/pytest-78/test_main_resolves_relative_pa0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x19bc11c90>
+minimal_vcf = PosixPath('/private/var/folders/gq/5znbqdq51158c_xf1391nj1m0000gn/T/pytest-of-cfos/pytest-78/test_main_resolves_relative_pa0/sample.vcf')
+
+    def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
+        coverage_path = tmp_path / "sample.cov.txt"
+        coverage_path.write_text("NC_045512.2\t266\t100\n", encoding="utf-8")
+
+        csv_path = tmp_path / "inputs.csv"
+        csv_path.write_text(
+            "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+            "Sample1,0,,,,sample.vcf,sample.cov.txt\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(main_module, "validate_dependencies", lambda mode="vcf": None)
+
+        def fake_setup(args):
+            args.reference = "/tmp/mock_reference.fasta"
+            args.gff3 = "/tmp/mock_annotation.gff3"
+            return args
+
+        monkeypatch.setattr(main_module, "setup_default_paths", fake_setup)
+        monkeypatch.setattr(
+            main_module, "validate_reference_and_annotation", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            main_module, "generate_cumulative_lineplot", lambda *a, **k: None
+        )
+        monkeypatch.setattr(main_module, "generate_variant_heatmap", lambda *a, **k: None)
+        monkeypatch.setattr(
+            main_module, "process_joint_variants", lambda path: pd.read_csv(path)
+        )
+        monkeypatch.setattr(
+            main_module, "generate_gene_table", lambda table, *_a, **_k: table
+        )
+        monkeypatch.setattr(main_module, "plot_gene_table", lambda *a, **k: None)
+        monkeypatch.setattr(main_module, "search_literature", lambda *a, **k: None)
+
+        formatted_csq = tmp_path / "formatted.csq.vcf.gz"
+        monkeypatch.setattr(
+            main_module,
+            "format_vcf",
+            lambda *a, **k: (str(tmp_path / "formatted.vcf.gz"), str(formatted_csq)),
+        )
+        monkeypatch.setattr(main_module, "merge_consequences", lambda *a, **k: None)
+        monkeypatch.setattr(
+            main_module,
+            "process_vcf",
+            lambda *a, **k: pd.DataFrame(
+                {
+                    "gene": ["S"],
+                    "variant": ["A266C"],
+                    "amino_acid_consequence": ["S:A1C"],
+                    "nsp_aa_change": [""],
+                    "presence_absence": ["Y"],
+                    "variant_status": ["new"],
+                    "persistence_status": ["new_persistent"],
+                    "samples": ["Sample1"],
+                    "alt_freq": ["0.5"],
+                }
+            ),
+        )
+
+        exit_code = main_module.main(
+            [
+                "vcf",
+                str(csv_path),
+                "--name",
+                "Example",
+                "--outdir",
+                str(tmp_path / "results"),
+            ]
+        )
+
+>       assert exit_code == 0
+E       assert 1 == 0
+
+tests/test_main.py:204: AssertionError
+----------------------------- Captured stdout call -----------------------------
+
+██    ██  █████  ██████  ████████ ██████   █████   ██████ ██   ██ ███████ ██████
+██    ██ ██   ██ ██   ██    ██    ██   ██ ██   ██ ██      ██  ██  ██      ██   ██
+██    ██ ███████ ██████     ██    ██████  ███████ ██      █████   █████   ██████
+ ██  ██  ██   ██ ██   ██    ██    ██   ██ ██   ██ ██      ██  ██  ██      ██   ██
+  ████   ██   ██ ██   ██    ██    ██   ██ ██   ██  ██████ ██   ██ ███████ ██   ██
+
+
+
+[93mWarning:[0m vartracker was designed for longitudinal comparisons but only one input VCF was provided. Some results may not make sense.
+Pre-processing VCF files for compatibility...
+Annotating results...
+Summarising results...
+Plotting results...
+
+ERROR: GFF3 not found: /private/tmp/mock_annotation.gff3
+
+________________ test_search_pokay_retains_parsed_database_csv _________________
+
+tmp_path = PosixPath('/private/var/folders/gq/5znbqdq51158c_xf1391nj1m0000gn/T/pytest-of-cfos/pytest-78/test_search_pokay_retains_pars0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1a160e2d0>
+minimal_vcf = PosixPath('/private/var/folders/gq/5znbqdq51158c_xf1391nj1m0000gn/T/pytest-of-cfos/pytest-78/test_search_pokay_retains_pars0/sample.vcf')
+
+    def test_search_pokay_retains_parsed_database_csv(tmp_path, monkeypatch, minimal_vcf):
+        coverage_path = tmp_path / "sample.cov.txt"
+        coverage_path.write_text("NC_045512.2\t266\t100\n", encoding="utf-8")
+
+        csv_path = tmp_path / "inputs.csv"
+        csv_path.write_text(
+            "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+            "Sample1,0,,,,sample.vcf,sample.cov.txt\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(main_module, "validate_dependencies", lambda mode="vcf": None)
+
+        def fake_setup(args):
+            args.reference = "/tmp/mock_reference.fasta"
+            args.gff3 = "/tmp/mock_annotation.gff3"
+            return args
+
+        monkeypatch.setattr(main_module, "setup_default_paths", fake_setup)
+        monkeypatch.setattr(
+            main_module, "validate_reference_and_annotation", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            main_module, "generate_cumulative_lineplot", lambda *a, **k: None
+        )
+        monkeypatch.setattr(main_module, "generate_variant_heatmap", lambda *a, **k: None)
+        monkeypatch.setattr(
+            main_module, "process_joint_variants", lambda path: pd.read_csv(path)
+        )
+        monkeypatch.setattr(
+            main_module, "generate_gene_table", lambda table, *_a, **_k: table
+        )
+        monkeypatch.setattr(main_module, "plot_gene_table", lambda *a, **k: None)
+        monkeypatch.setattr(
+            main_module, "search_literature", lambda *a, **k: pd.DataFrame()
+        )
+
+        formatted_csq = tmp_path / "formatted.csq.vcf.gz"
+        monkeypatch.setattr(
+            main_module,
+            "format_vcf",
+            lambda *a, **k: (str(tmp_path / "formatted.vcf.gz"), str(formatted_csq)),
+        )
+        monkeypatch.setattr(main_module, "merge_consequences", lambda *a, **k: None)
+        monkeypatch.setattr(
+            main_module,
+            "process_vcf",
+            lambda *a, **k: pd.DataFrame(
+                {
+                    "gene": ["S"],
+                    "variant": ["A266C"],
+                    "amino_acid_consequence": ["S:A1C"],
+                    "nsp_aa_change": [""],
+                    "presence_absence": ["Y"],
+                    "variant_status": ["new"],
+                    "persistence_status": ["new_persistent"],
+                    "samples": ["Sample1"],
+                    "alt_freq": ["0.5"],
+                }
+            ),
+        )
+
+        def fake_parse_pokay(argv):
+            output_path = Path(argv[0])
+            output_path.write_text(
+                "gene,mutation,information,reference\nS,S:A1C,Mock hit,PMID123\n",
+                encoding="utf-8",
+            )
+            return 0
+
+        monkeypatch.setattr(main_module.parse_pokay_module, "main", fake_parse_pokay)
+
+        outdir = tmp_path / "results"
+        exit_code = main_module.main(
+            [
+                "vcf",
+                str(csv_path),
+                "--name",
+                "Example",
+                "--outdir",
+                str(outdir),
+                "--search-pokay",
+            ]
+        )
+
+>       assert exit_code == 0
+E       assert 1 == 0
+
+tests/test_main.py:292: AssertionError
+----------------------------- Captured stdout call -----------------------------
+
+██    ██  █████  ██████  ████████ ██████   █████   ██████ ██   ██ ███████ ██████
+██    ██ ██   ██ ██   ██    ██    ██   ██ ██   ██ ██      ██  ██  ██      ██   ██
+██    ██ ███████ ██████     ██    ██████  ███████ ██      █████   █████   ██████
+ ██  ██  ██   ██ ██   ██    ██    ██   ██ ██   ██ ██      ██  ██  ██      ██   ██
+  ████   ██   ██ ██   ██    ██    ██   ██ ██   ██  ██████ ██   ██ ███████ ██   ██
+
+
+
+[93mWarning:[0m vartracker was designed for longitudinal comparisons but only one input VCF was provided. Some results may not make sense.
+Pre-processing VCF files for compatibility...
+Annotating results...
+Summarising results...
+Plotting results...
+
+ERROR: GFF3 not found: /private/tmp/mock_annotation.gff3
+
+______________ test_vcf_heatmap_options_are_forwarded_to_heatmap _______________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1a13ed750>
+tmp_path = PosixPath('/private/var/folders/gq/5znbqdq51158c_xf1391nj1m0000gn/T/pytest-of-cfos/pytest-78/test_vcf_heatmap_options_are_f0')
+minimal_vcf = PosixPath('/private/var/folders/gq/5znbqdq51158c_xf1391nj1m0000gn/T/pytest-of-cfos/pytest-78/test_vcf_heatmap_options_are_f0/sample.vcf')
+
+    def test_vcf_heatmap_options_are_forwarded_to_heatmap(
+        monkeypatch, tmp_path, minimal_vcf
+    ):
+        coverage_path = tmp_path / "sample.cov.txt"
+        coverage_path.write_text("NC_045512.2\t266\t100\n", encoding="utf-8")
+
+        csv_path = tmp_path / "inputs.csv"
+        csv_path.write_text(
+            "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+            "Sample1,0,,,,sample.vcf,sample.cov.txt\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(main_module, "validate_dependencies", lambda mode="vcf": None)
+
+        def fake_setup(args):
+            args.reference = "/tmp/mock_reference.fasta"
+            args.gff3 = "/tmp/mock_annotation.gff3"
+            return args
+
+        monkeypatch.setattr(main_module, "setup_default_paths", fake_setup)
+        monkeypatch.setattr(
+            main_module, "validate_reference_and_annotation", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            main_module, "generate_cumulative_lineplot", lambda *a, **k: None
+        )
+        monkeypatch.setattr(
+            main_module, "process_joint_variants", lambda path: pd.read_csv(path)
+        )
+        monkeypatch.setattr(
+            main_module, "generate_gene_table", lambda table, *_a, **_k: table
+        )
+        monkeypatch.setattr(main_module, "plot_gene_table", lambda *a, **k: None)
+        monkeypatch.setattr(main_module, "search_literature", lambda *a, **k: None)
+
+        recorded = {}
+
+        def fake_heatmap(*args, **kwargs):
+            recorded.update(kwargs)
+
+        monkeypatch.setattr(main_module, "generate_variant_heatmap", fake_heatmap)
+
+        formatted_csq = tmp_path / "formatted.csq.vcf.gz"
+        monkeypatch.setattr(
+            main_module,
+            "format_vcf",
+            lambda *a, **k: (str(tmp_path / "formatted.vcf.gz"), str(formatted_csq)),
+        )
+        monkeypatch.setattr(main_module, "merge_consequences", lambda *a, **k: None)
+        monkeypatch.setattr(
+            main_module,
+            "process_vcf",
+            lambda *a, **k: pd.DataFrame(
+                {
+                    "gene": ["S"],
+                    "variant": ["A266C"],
+                    "amino_acid_consequence": ["S:A1C"],
+                    "nsp_aa_change": [""],
+                    "presence_absence": ["Y"],
+                    "variant_status": ["new"],
+                    "persistence_status": ["new_persistent"],
+                    "samples": ["Sample1"],
+                    "alt_freq": ["0.5"],
+                }
+            ),
+        )
+
+        exit_code = main_module.main(
+            [
+                "vcf",
+                str(csv_path),
+                "--outdir",
+                str(tmp_path / "results"),
+                "--heatmap-aa-exclude",
+                "synonymous,*frameshift*,stop_gained",
+                "--heatmap-aa-include",
+                "missense",
+                "--heatmap-only-persistent",
+                "--heatmap-only-new",
+                "--heatmap-gene-include",
+                "S",
+                "--heatmap-gene-exclude",
+                "N",
+                "--heatmap-variant-type",
+                "snp",
+                "--heatmap-qc",
+                "PASS",
+                "--min-prop-passing-qc",
+                "0.75",
+                "--heatmap-min-persistence",
+                "2",
+                "--heatmap-min-max-af",
+                "0.4",
+                "--heatmap-min-sample-af",
+                "0.3",
+                "--heatmap-sample-subset",
+                "Sample1",
+                "--heatmap-hide-singletons",
+                "--heatmap-min-depth",
+                "20",
+            ]
+        )
+
+>       assert exit_code == 0
+E       assert 1 == 0
+
+tests/test_main.py:400: AssertionError
+----------------------------- Captured stdout call -----------------------------
+
+██    ██  █████  ██████  ████████ ██████   █████   ██████ ██   ██ ███████ ██████
+██    ██ ██   ██ ██   ██    ██    ██   ██ ██   ██ ██      ██  ██  ██      ██   ██
+██    ██ ███████ ██████     ██    ██████  ███████ ██      █████   █████   ██████
+ ██  ██  ██   ██ ██   ██    ██    ██   ██ ██   ██ ██      ██  ██  ██      ██   ██
+  ████   ██   ██ ██   ██    ██    ██   ██ ██   ██  ██████ ██   ██ ███████ ██   ██
+
+
+
+[93mWarning:[0m vartracker was designed for longitudinal comparisons but only one input VCF was provided. Some results may not make sense.
+Pre-processing VCF files for compatibility...
+Annotating results...
+Summarising results...
+Plotting results...
+
+ERROR: GFF3 not found: /private/tmp/mock_annotation.gff3
+
 ================================ tests coverage ================================
 _______________ coverage: platform darwin, python 3.11.8-final-0 _______________
 
@@ -16,13 +361,17 @@ vartracker/core.py                       62     10    84%   90, 95, 98-100, 113-
 vartracker/data/__init__.py               8      0   100%
 vartracker/data/parse_pokay.py          141     26    82%   69-70, 110, 127-130, 155-156, 162, 168, 234, 253-276, 280
 vartracker/generate.py                  121     13    89%   54, 74, 84, 99, 115, 119, 132, 143, 156, 167, 202, 205, 207
-vartracker/main.py                      939    277    71%   125, 404, 410, 422, 428-433, 439, 443, 476, 479-480, 484-489, 497, 515, 521-529, 534-572, 577-605, 616, 759-760, 796-802, 806-809, 960-963, 982-984, 1041-1044, 1090, 1140-1143, 1166-1168, 1209-1211, 1450-1453, 1467, 1500-1504, 1506-1507, 1528, 1543-1544, 1548-1549, 1560-1561, 1566-1571, 1588, 1592, 1608, 1612, 1617-1625, 1643-1666, 1719, 1721, 1731-1749, 1830-1834, 1851-1855, 1861-1862, 1867, 1888, 1906-1911, 1922, 1939-1952, 1972-1976, 1993-1997, 2001-2002, 2007, 2030, 2048-2053, 2064, 2081-2094, 2104, 2115, 2117, 2127, 2141, 2146-2150, 2170-2179, 2183-2227, 2254-2260, 2289, 2299-2304, 2366, 2438
-vartracker/plotting.py                  297     54    82%   29-37, 43, 46, 52, 58, 62, 69, 71, 76-77, 85, 87, 97, 117, 120, 122, 163, 225, 241, 246, 251, 281, 318, 320, 334, 369-389, 407, 436, 456-457, 564, 572, 608, 626-627, 650
-vartracker/provenance.py                166     52    69%   45, 63-73, 77-87, 97-115, 127-128, 140, 158, 169-170, 173, 185-186, 245, 272-273, 280, 282, 307
+vartracker/main.py                      972    279    71%   129, 408, 414, 426, 432-437, 443, 447, 480, 483-484, 488-493, 501, 519, 525-533, 538-576, 581-609, 620, 763-764, 800-806, 810-813, 964-967, 986-988, 1045-1048, 1094, 1144-1147, 1170-1172, 1213-1215, 1556-1559, 1573, 1606-1610, 1612-1613, 1634, 1649-1650, 1654-1655, 1666-1667, 1672-1677, 1694, 1698, 1714, 1718, 1723-1731, 1749-1772, 1822-1836, 1844-1847, 1853-1861, 1942-1946, 1963-1967, 1973-1974, 1979, 2000, 2018-2023, 2034, 2051-2064, 2084-2088, 2105-2109, 2113-2114, 2119, 2142, 2160-2165, 2176, 2193-2206, 2216, 2227, 2229, 2239, 2253, 2258-2262, 2282-2291, 2295-2339, 2366-2372, 2401, 2411-2416, 2478, 2557
+vartracker/plotting.py                  533     84    84%   33-41, 47, 50, 56, 62, 66, 73, 75, 80-81, 89, 91, 101, 121, 124, 126, 167, 229, 245, 250, 255, 285, 322, 324, 338, 373-393, 411, 440, 460-461, 568, 576, 612, 630-631, 654, 664, 671-672, 676, 685, 707, 730, 740, 769, 785-787, 794, 827, 835, 861-862, 864, 866, 868, 870, 872, 886, 891, 966, 970, 973, 999, 1002, 1080
+vartracker/provenance.py                166     51    69%   45, 63-73, 77-87, 97-115, 127-128, 140, 158, 169-170, 173, 185-186, 245, 272-273, 282, 307
 vartracker/reference_prepare.py         308     44    86%   82, 93, 104, 106, 114, 121-146, 155, 162-164, 170, 182-183, 204, 212, 218, 294, 353, 357, 364, 368, 376, 406, 414, 460, 486, 498, 517, 548, 591, 596, 601, 609-610
 vartracker/schemas.py                    60      7    88%   270-298, 303
 vartracker/vcf_processing.py            337    308     9%   23-25, 33-112, 124, 136-140, 146-152, 180-353, 366-394, 409-484, 498-639, 658-706, 759-766
 -------------------------------------------------------------------
-TOTAL                                  3488   1296    63%
+TOTAL                                  3757   1327    65%
 Coverage XML written to file coverage.xml
-82 passed in 42.73s
+=========================== short test summary info ============================
+FAILED tests/test_main.py::test_main_resolves_relative_paths - assert 1 == 0
+FAILED tests/test_main.py::test_search_pokay_retains_parsed_database_csv - as...
+FAILED tests/test_main.py::test_vcf_heatmap_options_are_forwarded_to_heatmap
+3 failed, 84 passed in 41.09s

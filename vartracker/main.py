@@ -44,18 +44,22 @@ from .analysis import (
 from .plotting import (
     DEFAULT_LIFESPAN_TOP_N,
     DEFAULT_TRAJECTORY_TOP_N,
+    _parse_focus_ranges,
     apply_shared_plot_filters,
     auto_select_variants,
+    load_reference_feature_metadata,
     collect_explicit_variants,
     get_threshold_crossing_variants,
     load_results_table,
     parse_thresholds,
+    plot_variant_genome,
     plot_variant_lifespan,
     plot_variant_trajectory,
     plot_variant_turnover,
     prepare_plot_inputs,
     _project_name_from_results,
     resolve_plot_output_path,
+    write_reference_feature_metadata,
 )
 from ._version import __version__
 from .provenance import (
@@ -389,6 +393,9 @@ def _resolve_plot_variants(
     prefer_crossing: bool = False,
     thresholds: Sequence[float] | None = None,
 ) -> list[str]:
+    def _label_prefix(value: object) -> str:
+        return str(value).split(" (", 1)[0].strip()
+
     if explicit_variants:
         selected = []
         seen = set()
@@ -396,7 +403,12 @@ def _resolve_plot_variants(
             match = summary[
                 summary.apply(
                     lambda row: requested
-                    in {row["variant_id"], row["variant_label"], row["variant_name"]},
+                    in {
+                        row["variant_id"],
+                        row["variant_label"],
+                        _label_prefix(row["variant_label"]),
+                        row["variant_name"],
+                    },
                     axis=1,
                 )
             ]
@@ -1116,6 +1128,8 @@ def _run_plot_trajectory_command(args):
             label_lines=args.label_lines,
             label_threshold_crossers=args.label_threshold_crossers,
             crossing_rule=args.crossing_rule,
+            label_mode=args.label_mode,
+            sample_axis_mode=args.sample_axis,
         )
         print(f"\nFinished: wrote {output_path}\n")
         return 0
@@ -1160,6 +1174,7 @@ def _run_plot_turnover_command(args):
             height=args.height,
             dpi=args.dpi,
             count_mode=args.count_mode,
+            sample_axis_mode=args.sample_axis,
         )
         print(f"\nFinished: wrote {output_path}\n")
         return 0
@@ -1203,6 +1218,50 @@ def _run_plot_lifespan_command(args):
             dpi=args.dpi,
             sort_by=args.sort_by,
             annotate_class=args.annotate_class,
+            sample_axis_mode=args.sample_axis,
+            sample_names=_sample_names,
+            sample_numbers=_sample_numbers,
+        )
+        print(f"\nFinished: wrote {output_path}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+
+def _run_plot_genome_command(args):
+    try:
+        results_csv = Path(args.results_csv).expanduser().resolve()
+        table = load_results_table(results_csv)
+        project_name = _project_name_from_results(table, getattr(args, "name", None))
+        metadata = load_reference_feature_metadata(results_csv)
+        output_path = resolve_plot_output_path(
+            results_csv,
+            out=args.out,
+            outdir=args.outdir,
+            fmt=args.format,
+            filename="variant_genome_plot",
+        )
+        plot_variant_genome(
+            table,
+            metadata,
+            output_path=output_path,
+            gene=args.gene,
+            aa_scale=args.aa_scale,
+            focus_ranges=_parse_focus_ranges(args.focus_coords),
+            min_af=args.min_af,
+            max_af=args.max_af,
+            effects=_parse_csv_option_list(args.effect),
+            persistent_only=args.persistent_only,
+            new_only=args.new_only,
+            include_indels=args.include_indels,
+            title=args.title
+            or (
+                f"{project_name}: genome variant distribution" if project_name else None
+            ),
+            width=args.width,
+            height=args.height,
+            dpi=args.dpi,
         )
         print(f"\nFinished: wrote {output_path}\n")
         return 0
@@ -1281,6 +1340,18 @@ def _add_plot_trajectory_subparser(subparsers):
         help="Add end labels to plotted lines",
     )
     parser.add_argument(
+        "--label-mode",
+        choices=["aa", "nt"],
+        default="aa",
+        help="Use amino-acid-style labels or nucleotide-level variant labels (default: aa)",
+    )
+    parser.add_argument(
+        "--sample-axis",
+        choices=["number", "name"],
+        default="number",
+        help="Use sample numbers or sample names on the x-axis (default: number)",
+    )
+    parser.add_argument(
         "--thresholds",
         default="",
         help="Comma-separated AF thresholds to draw, e.g. 0.5,0.9",
@@ -1330,6 +1401,12 @@ def _add_plot_turnover_subparser(subparsers):
         default="count",
         help="Aggregate turnover as counts or summed allele frequencies (default: count)",
     )
+    parser.add_argument(
+        "--sample-axis",
+        choices=["number", "name"],
+        default="number",
+        help="Use sample numbers or sample names on the x-axis (default: number)",
+    )
     parser.add_argument("--title", default=None, help="Optional plot title")
     parser.add_argument(
         "--width", type=float, default=8.5, help="Figure width in inches"
@@ -1369,6 +1446,12 @@ def _add_plot_lifespan_subparser(subparsers):
         default=False,
         help="Append variant/new and persistent/transient classes to labels",
     )
+    parser.add_argument(
+        "--sample-axis",
+        choices=["number", "name"],
+        default="number",
+        help="Use sample numbers or sample names on the x-axis (default: number)",
+    )
     parser.add_argument("--title", default=None, help="Optional plot title")
     parser.add_argument(
         "--width", type=float, default=8.5, help="Figure width in inches"
@@ -1380,6 +1463,75 @@ def _add_plot_lifespan_subparser(subparsers):
     parser.set_defaults(handler=_run_plot_lifespan_command)
 
 
+def _add_plot_genome_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "genome",
+        help="Plot collapsed variant allele frequencies along the genome",
+        description=(
+            "Generate a genome-position summary plot from a vartracker results CSV."
+        ),
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    filter_group = parser.add_argument_group("Filtering")
+    filter_group.add_argument("--gene", default=None, help="Restrict to a single gene")
+    filter_group.add_argument(
+        "--effect",
+        default="",
+        help="Comma-separated effect classes to include (e.g. missense,synonymous)",
+    )
+    filter_group.add_argument(
+        "--min-af",
+        type=float,
+        default=None,
+        help="Minimum collapsed allele frequency to include",
+    )
+    filter_group.add_argument(
+        "--max-af",
+        type=float,
+        default=None,
+        help="Maximum collapsed allele frequency to include",
+    )
+    filter_group.add_argument(
+        "--persistent-only",
+        action="store_true",
+        default=False,
+        help="Only include variants with persistence_status == new_persistent",
+    )
+    filter_group.add_argument(
+        "--new-only",
+        action="store_true",
+        default=False,
+        help="Only include variants with variant_status == new",
+    )
+    filter_group.add_argument(
+        "--include-indels",
+        action="store_true",
+        default=False,
+        help="Include indels as well as SNPs in the genome plot (default: SNPs only)",
+    )
+    parser.add_argument(
+        "--aa-scale",
+        action="store_true",
+        default=False,
+        help="With --gene, plot x-axis in amino-acid coordinates for that gene",
+    )
+    parser.add_argument(
+        "--focus-coords",
+        default="",
+        help="Comma-separated coordinate ranges to highlight, e.g. 150-300,900-1800",
+    )
+    parser.add_argument("--title", default=None, help="Optional plot title")
+    parser.add_argument(
+        "--width", type=float, default=10.0, help="Figure width in inches"
+    )
+    parser.add_argument(
+        "--height", type=float, default=6.5, help="Figure height in inches"
+    )
+    _add_plot_output_arguments(parser)
+    parser.set_defaults(handler=_run_plot_genome_command)
+
+
 def _add_plot_subparser(subparsers):
     plot_parser = subparsers.add_parser(
         "plot",
@@ -1389,6 +1541,7 @@ def _add_plot_subparser(subparsers):
     )
     plot_subparsers = plot_parser.add_subparsers(dest="plot_command")
     _add_plot_heatmap_subparser(plot_subparsers)
+    _add_plot_genome_subparser(plot_subparsers)
     _add_plot_trajectory_subparser(plot_subparsers)
     _add_plot_turnover_subparser(plot_subparsers)
     _add_plot_lifespan_subparser(plot_subparsers)
@@ -1685,6 +1838,9 @@ def _run_vcf_command(args):
             outputs = {
                 "results_csv": os.path.join(args.outdir, args.filename),
                 "results_metadata": str(results_metadata_path),
+                "reference_features": os.path.join(
+                    args.outdir, "reference_features.json"
+                ),
                 "new_mutations_csv": os.path.join(args.outdir, "new_mutations.csv"),
                 "persistent_new_mutations_csv": os.path.join(
                     args.outdir, "persistent_new_mutations.csv"
@@ -1697,6 +1853,9 @@ def _run_vcf_command(args):
                 ),
                 "variant_turnover_plot": os.path.join(
                     args.outdir, "variant_turnover_plot.pdf"
+                ),
+                "variant_genome_plot": os.path.join(
+                    args.outdir, "variant_genome_plot.pdf"
                 ),
                 "variant_allele_frequency_heatmap_html": os.path.join(
                     args.outdir, "variant_allele_frequency_heatmap.html"
@@ -2405,6 +2564,16 @@ def _process_files(
         output_path=os.path.join(args.outdir, "variant_turnover_plot.pdf"),
         title=f"{pname}: variant turnover" if pname else None,
     )
+    try:
+        write_reference_feature_metadata(args.gff3, args.outdir)
+        plot_variant_genome(
+            table,
+            load_reference_feature_metadata(outfile),
+            output_path=os.path.join(args.outdir, "variant_genome_plot.pdf"),
+            title=f"{pname}: genome variant distribution" if pname else None,
+        )
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"Warning: skipped genome plot generation ({exc})")
     generate_variant_heatmap(
         table,
         sample_names,
