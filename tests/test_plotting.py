@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 
 from vartracker.core import InputValidationError
 from vartracker.plotting import (
     _collapse_variants_for_genome_plot,
+    _genome_axis_label,
     _parse_focus_ranges,
     _subset_collapsed_variants,
     build_reference_feature_metadata,
@@ -19,6 +22,7 @@ from vartracker.plotting import (
     plot_variant_trajectory,
     plot_variant_turnover,
     prepare_plot_inputs,
+    resolve_focus_regions,
     variant_crosses_thresholds,
 )
 
@@ -148,6 +152,13 @@ def test_auto_select_variants_prefers_literature_and_persistent():
     ].iloc[0]
     assert first_label.split(" (", 1)[0] == "S:D614G"
     assert len(selected) == 2
+
+
+def test_genome_axis_label_uses_gene_name_for_cds_scale():
+    assert (
+        _genome_axis_label(gene="F", aa_scale=False, cds_scale=True)
+        == "CDS position in F"
+    )
 
 
 def test_plot_functions_create_output_files(tmp_path, monkeypatch):
@@ -359,14 +370,21 @@ def test_genome_plot_builds_outputs_and_supports_gene_modes(tmp_path, monkeypatc
     genome_out = tmp_path / "genome.pdf"
     focus_out = tmp_path / "genome_focus.pdf"
     aa_out = tmp_path / "genome_gene_aa.pdf"
+    cds_out = tmp_path / "genome_gene_cds.pdf"
 
     plot_variant_genome(table, metadata, output_path=genome_out)
     plot_variant_genome(
         table,
         metadata,
         output_path=focus_out,
-        focus_ranges=_parse_focus_ranges("23000-24000,50000-51000"),
+        focus_ranges=resolve_focus_regions(
+            "Fusion peptide:23000-24000;Heptad repeat:50000-51000", ""
+        )[0],
+        focus_labels=resolve_focus_regions(
+            "Fusion peptide:23000-24000;Heptad repeat:50000-51000", ""
+        )[1],
         gene="S",
+        show_intersections=True,
     )
     plot_variant_genome(
         table,
@@ -376,12 +394,91 @@ def test_genome_plot_builds_outputs_and_supports_gene_modes(tmp_path, monkeypatc
         aa_scale=True,
         focus_ranges=_parse_focus_ranges("450-650"),
     )
+    plot_variant_genome(
+        table,
+        metadata,
+        output_path=cds_out,
+        gene="S",
+        cds_scale=True,
+        focus_ranges=_parse_focus_ranges("440-500"),
+    )
 
     assert genome_out.exists()
     assert focus_out.exists()
     assert aa_out.exists()
+    assert cds_out.exists()
 
 
 def test_parse_focus_ranges_caps_number_of_regions():
     with pytest.raises(InputValidationError):
         _parse_focus_ranges("1-2,3-4,5-6,7-8,9-10,11-12,13-14")
+
+
+def test_parse_focus_ranges_supports_semicolon_color_groups():
+    parsed = _parse_focus_ranges(
+        "62-69,196-210;31-42,323-332,379-399;254-277;50-50,305-310;422-438;163-181"
+    )
+
+    assert parsed == [
+        (62.0, 69.0, 0),
+        (196.0, 210.0, 0),
+        (31.0, 42.0, 1),
+        (323.0, 332.0, 1),
+        (379.0, 399.0, 1),
+        (254.0, 277.0, 2),
+        (50.0, 50.0, 3),
+        (305.0, 310.0, 3),
+        (422.0, 438.0, 4),
+        (163.0, 181.0, 5),
+    ]
+
+
+def test_parse_focus_ranges_caps_number_of_groups():
+    with pytest.raises(InputValidationError):
+        _parse_focus_ranges("1-2;3-4;5-6;7-8;9-10;11-12;13-14")
+
+
+def test_resolve_focus_regions_supports_named_inline_groups():
+    ranges, labels = resolve_focus_regions(
+        "Ø:62-69,196-210;I:31-42,323-332,379-399;II:254-277", ""
+    )
+
+    assert labels == ["Ø", "I", "II"]
+    assert ranges == [
+        (62.0, 69.0, 0),
+        (196.0, 210.0, 0),
+        (31.0, 42.0, 1),
+        (323.0, 332.0, 1),
+        (379.0, 399.0, 1),
+        (254.0, 277.0, 2),
+    ]
+
+
+def test_resolve_focus_regions_supports_json_and_csv_files(tmp_path):
+    json_path = tmp_path / "regions.json"
+    json_path.write_text(
+        json.dumps({"Ø": ["62-69", "196-210"], "I": ["31-42", "323-332"]}),
+        encoding="utf-8",
+    )
+    csv_path = tmp_path / "regions.csv"
+    csv_path.write_text(
+        "label,start,end\nII,254,277\nIII,50,50\nIII,305,310\n",
+        encoding="utf-8",
+    )
+
+    json_ranges, json_labels = resolve_focus_regions("", str(json_path))
+    csv_ranges, csv_labels = resolve_focus_regions("", str(csv_path))
+
+    assert json_labels == ["Ø", "I"]
+    assert json_ranges == [
+        (62.0, 69.0, 0),
+        (196.0, 210.0, 0),
+        (31.0, 42.0, 1),
+        (323.0, 332.0, 1),
+    ]
+    assert csv_labels == ["II", "III"]
+    assert csv_ranges == [
+        (254.0, 277.0, 0),
+        (50.0, 50.0, 1),
+        (305.0, 310.0, 1),
+    ]

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
+from textwrap import wrap
 from typing import Iterable, Sequence, cast
 from urllib.parse import unquote
 
@@ -11,6 +13,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.gridspec import GridSpec
+from matplotlib.patches import Patch
+from matplotlib.transforms import Bbox
 
 from .analysis import (
     _coerce_frequency,
@@ -31,6 +35,7 @@ FOCUS_RANGE_COLORS = [
     "#d1c4e9",
     "#b2dfdb",
 ]
+FocusRange = tuple[float, float, int]
 FeatureRecord = dict[str, object]
 
 
@@ -545,7 +550,25 @@ def plot_variant_trajectory(
     if plot_df.empty:
         raise ProcessingError("No data available for the trajectory plot")
 
-    fig, ax = plt.subplots(figsize=(width, height))
+    show_legend = not label_lines and not label_threshold_crossers
+    if show_legend:
+        fig = plt.figure(
+            figsize=(width + 1.4, height),
+            constrained_layout=True,
+        )
+        grid = GridSpec(
+            1,
+            2,
+            figure=fig,
+            width_ratios=[1.0, 0.2],
+            wspace=0.03,
+        )
+        ax = fig.add_subplot(grid[0, 0])
+        legend_ax = fig.add_subplot(grid[0, 1])
+        legend_ax.axis("off")
+    else:
+        fig, ax = plt.subplots(figsize=(width, height))
+        legend_ax = None
     threshold_values = [float(value) for value in (thresholds or [])]
     for variant_id in selected_variants:
         subset = plot_df[plot_df["variant_id"] == variant_id].sort_values(
@@ -596,9 +619,21 @@ def plot_variant_trajectory(
             float(threshold), linestyle="--", linewidth=1.0, color="black", alpha=0.6
         )
     _apply_plot_title(ax, title, "Variant trajectories")
-    if not label_lines and not label_threshold_crossers:
-        ax.legend(frameon=False, loc="best")
-    fig.tight_layout()
+    if show_legend and legend_ax is not None:
+        handles, labels = ax.get_legend_handles_labels()
+        legend = legend_ax.legend(
+            handles,
+            labels,
+            title="Variants",
+            loc="upper left",
+            frameon=False,
+            borderaxespad=0.0,
+            handlelength=1.8,
+            labelspacing=0.35,
+        )
+        legend.get_title().set_fontweight("bold")
+    elif hasattr(fig, "tight_layout"):
+        fig.tight_layout()
     fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
@@ -820,31 +855,168 @@ def collect_explicit_variants(
     return requested or file_variants
 
 
-def _parse_focus_ranges(value: str | None) -> list[tuple[float, float]]:
-    if not value:
-        return []
-    ranges: list[tuple[float, float]] = []
-    for part in _parse_csv_option_list(value):
-        if "-" not in part:
-            raise InputValidationError(
-                "Focus ranges must use start-end syntax, e.g. 150-300,900-1800"
-            )
-        start_text, end_text = part.split("-", 1)
-        try:
-            start = float(start_text)
-            end = float(end_text)
-        except ValueError as exc:
-            raise InputValidationError(
-                "Focus ranges must use numeric start-end coordinates"
-            ) from exc
-        if end < start:
-            start, end = end, start
-        ranges.append((start, end))
-    if len(ranges) > MAX_FOCUS_RANGES:
+def _parse_single_focus_range(part: str) -> tuple[float, float]:
+    if "-" not in part:
         raise InputValidationError(
-            f"Use at most {MAX_FOCUS_RANGES} focus ranges so each can retain a distinct highlight color"
+            "Focus ranges must use start-end syntax, e.g. 150-300,900-1800 or Name:150-300,900-1800;Other:50-120"
         )
-    return ranges
+    start_text, end_text = part.split("-", 1)
+    try:
+        start = float(start_text)
+        end = float(end_text)
+    except ValueError as exc:
+        raise InputValidationError(
+            "Focus ranges must use numeric start-end coordinates"
+        ) from exc
+    if end < start:
+        start, end = end, start
+    return start, end
+
+
+def _parse_focus_region_groups(
+    value: str | None,
+) -> tuple[list[FocusRange], list[str | None]]:
+    if not value:
+        return [], []
+
+    ranges: list[FocusRange] = []
+    labels: list[str | None] = []
+    group_texts = [part.strip() for part in str(value).split(";") if part.strip()]
+    if not group_texts:
+        return [], []
+
+    group_specs: list[tuple[str | None, list[str]]]
+    # Preserve legacy behavior for purely comma-separated input: one range per color.
+    if len(group_texts) == 1 and ":" not in group_texts[0]:
+        raw_ranges = _parse_csv_option_list(group_texts[0])
+        group_specs = [(None, [part]) for part in raw_ranges]
+    else:
+        group_specs = []
+        for group_text in group_texts:
+            label: str | None = None
+            range_text = group_text
+            if ":" in group_text:
+                maybe_label, maybe_ranges = group_text.split(":", 1)
+                if maybe_label.strip():
+                    label = maybe_label.strip()
+                    range_text = maybe_ranges
+            group_parts = _parse_csv_option_list(range_text)
+            if not group_parts:
+                raise InputValidationError(
+                    "Each focus region group must include at least one range"
+                )
+            group_specs.append((label, group_parts))
+
+    if len(group_specs) > MAX_FOCUS_RANGES:
+        raise InputValidationError(
+            f"Use at most {MAX_FOCUS_RANGES} focus region groups so each can retain a distinct highlight color"
+        )
+
+    for group_index, (label, group_parts) in enumerate(group_specs):
+        labels.append(label)
+        for part in group_parts:
+            start, end = _parse_single_focus_range(part)
+            ranges.append((start, end, group_index))
+    return ranges, labels
+
+
+def _parse_focus_ranges(value: str | None) -> list[FocusRange]:
+    return _parse_focus_region_groups(value)[0]
+
+
+def _load_focus_region_file(
+    path: str | None,
+) -> tuple[list[FocusRange], list[str | None]]:
+    if not path:
+        return [], []
+    focus_path = Path(path).expanduser().resolve()
+    if not focus_path.exists():
+        raise InputValidationError(f"Focus region file not found: {focus_path}")
+
+    suffix = focus_path.suffix.lower()
+    if suffix == ".json":
+        payload = json.loads(focus_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            group_specs = [
+                (str(label).strip(), value) for label, value in payload.items()
+            ]
+        elif isinstance(payload, list):
+            group_specs = []
+            for entry in payload:
+                if not isinstance(entry, dict) or "label" not in entry:
+                    raise InputValidationError(
+                        "JSON focus region entries must be objects with 'label' and 'ranges'"
+                    )
+                group_specs.append(
+                    (str(entry["label"]).strip(), entry.get("ranges", []))
+                )
+        else:
+            raise InputValidationError(
+                "JSON focus region file must contain an object or list of labeled ranges"
+            )
+
+        specs: list[str] = []
+        for label, value in group_specs:
+            if isinstance(value, str):
+                ranges_text = value
+            elif isinstance(value, list):
+                ranges_text = ",".join(
+                    str(item).strip() for item in value if str(item).strip()
+                )
+            else:
+                raise InputValidationError(
+                    "JSON focus region values must be a range string or list of range strings"
+                )
+            specs.append(f"{label}:{ranges_text}")
+        return _parse_focus_region_groups(";".join(specs))
+
+    if suffix in {".csv", ".tsv"}:
+        delimiter = "\t" if suffix == ".tsv" else ","
+        with focus_path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter=delimiter)
+            required = {"label", "start", "end"}
+            if reader.fieldnames is None or not required.issubset(
+                {field.strip().lower() for field in reader.fieldnames}
+            ):
+                raise InputValidationError(
+                    "Focus region CSV/TSV must contain label,start,end columns"
+                )
+            grouped: dict[str, list[str]] = {}
+            for row in reader:
+                label = str(row.get("label", "")).strip()
+                start = str(row.get("start", "")).strip()
+                end = str(row.get("end", "")).strip()
+                if not label or not start or not end:
+                    raise InputValidationError(
+                        "Focus region CSV/TSV rows must include label,start,end values"
+                    )
+                grouped.setdefault(label, []).append(f"{start}-{end}")
+        specs = [f"{label}:{','.join(ranges)}" for label, ranges in grouped.items()]
+        return _parse_focus_region_groups(";".join(specs))
+
+    raise InputValidationError("Focus region file must be .json, .csv, or .tsv")
+
+
+def resolve_focus_regions(
+    focus_coords: str | None, focus_region_file: str | None
+) -> tuple[list[FocusRange], list[str | None]]:
+    cli_ranges, cli_labels = _parse_focus_region_groups(focus_coords)
+    file_ranges, file_labels = _load_focus_region_file(focus_region_file)
+    if not cli_ranges and not file_ranges:
+        return [], []
+
+    offset = len(file_labels)
+    merged_ranges = list(file_ranges)
+    merged_labels = list(file_labels)
+    merged_labels.extend(cli_labels)
+    for start, end, group_index in cli_ranges:
+        merged_ranges.append((start, end, group_index + offset))
+
+    if len(merged_labels) > MAX_FOCUS_RANGES:
+        raise InputValidationError(
+            f"Use at most {MAX_FOCUS_RANGES} focus region groups so each can retain a distinct highlight color"
+        )
+    return merged_ranges, merged_labels
 
 
 def _parse_gff_attrs(attr_text: str) -> dict[str, str]:
@@ -986,6 +1158,7 @@ def _collapse_variants_for_genome_plot(
             {
                 "variant_id": variant_key,
                 "variant_label": display_label.replace("\n", " "),
+                "variant_name": str(getattr(row, "variant", "")).strip(),
                 "chrom": str(getattr(row, "chrom", "")).strip(),
                 "start": int(getattr(row, "start", 0)),
                 "end": int(getattr(row, "end", getattr(row, "start", 0))),
@@ -1098,16 +1271,46 @@ def _find_gene_feature(metadata: dict[str, object], gene_name: str) -> FeatureRe
 
 
 def _clip_focus_ranges(
-    ranges: Sequence[tuple[float, float]], xmin: float, xmax: float
-) -> tuple[list[tuple[float, float]], int]:
-    clipped: list[tuple[float, float]] = []
+    ranges: Sequence[FocusRange], xmin: float, xmax: float
+) -> tuple[list[FocusRange], int]:
+    clipped: list[FocusRange] = []
     ignored = 0
-    for start, end in ranges:
+    for start, end, group_index in ranges:
         if end < xmin or start > xmax:
             ignored += 1
             continue
-        clipped.append((max(start, xmin), min(end, xmax)))
+        clipped.append((max(start, xmin), min(end, xmax), group_index))
     return clipped, ignored
+
+
+def _focus_group_name(label: str | None, group_index: int) -> str:
+    return (
+        str(label).strip()
+        if label and str(label).strip()
+        else f"Region {group_index + 1}"
+    )
+
+
+def _format_focus_variants(variants: Sequence[str]) -> str:
+    joined = ", ".join(variants)
+    return "\n".join(wrap(joined, width=54)) if joined else ""
+
+
+def _format_focus_table_column(values: Sequence[str], width: int) -> str:
+    lines: list[str] = []
+    for value in values:
+        wrapped = wrap(str(value), width=width) or [str(value)]
+        lines.extend(wrapped)
+    return "\n".join(lines)
+
+
+def _genome_axis_label(*, gene: str | None, aa_scale: bool, cds_scale: bool) -> str:
+    if aa_scale:
+        return "Amino-acid position"
+    if cds_scale:
+        gene_label = str(gene).strip() if gene else "gene"
+        return f"CDS position in {gene_label}"
+    return "Genomic position"
 
 
 def plot_variant_genome(
@@ -1117,13 +1320,16 @@ def plot_variant_genome(
     output_path: str | Path,
     gene: str | None = None,
     aa_scale: bool = False,
-    focus_ranges: Sequence[tuple[float, float]] | None = None,
+    cds_scale: bool = False,
+    focus_ranges: Sequence[FocusRange] | None = None,
+    focus_labels: Sequence[str | None] | None = None,
     min_af: float | None = None,
     max_af: float | None = None,
     effects: Sequence[str] | None = None,
     persistent_only: bool = False,
     new_only: bool = False,
     include_indels: bool = False,
+    show_intersections: bool = False,
     title: str | None = None,
     width: float = 10.0,
     height: float = 6.5,
@@ -1131,10 +1337,15 @@ def plot_variant_genome(
 ) -> None:
     if aa_scale and not gene:
         raise InputValidationError("--aa-scale requires --gene")
+    if cds_scale and not gene:
+        raise InputValidationError("--cds-scale requires --gene")
+    if aa_scale and cds_scale:
+        raise InputValidationError("Use either --aa-scale or --cds-scale, not both")
     if include_indels:
         print(
             "Warning: including indels in the genome plot may produce ambiguous or hard-to-interpret positions"
         )
+    detection_floor = float(min_af) if min_af is not None else 0.03
 
     collapsed = _collapse_variants_for_genome_plot(table)
     collapsed = _subset_collapsed_variants(
@@ -1184,6 +1395,9 @@ def plot_variant_genome(
                 1.0,
                 float(cast(int | float | str, gene_feature.get("aa_length", 1))),
             )
+        elif cds_scale:
+            plot_df["x_coord"] = plot_df["start"].astype(float) - start + 1.0
+            region_by_contig[contig] = (1.0, end - start + 1.0)
         else:
             plot_df["x_coord"] = plot_df["start"].astype(float)
             region_by_contig[contig] = (start, end)
@@ -1213,66 +1427,220 @@ def plot_variant_genome(
     if not selected_contigs:
         raise ProcessingError("No contigs remain for genome plotting")
 
+    focus = list(focus_ranges or [])
+    focus_group_labels = list(focus_labels or [])
+    focus_hits: dict[int, set[tuple[str, str]]] = {}
+    ignored_focus_total = 0
+    if focus:
+        ignored_focus_total = sum(
+            1
+            for start, end, _group_index in focus
+            if not any(
+                not (
+                    end < region_by_contig[contig][0]
+                    or start > region_by_contig[contig][1]
+                )
+                for contig in selected_contigs
+            )
+        )
+    for contig in selected_contigs:
+        subset = plot_df[plot_df["chrom"].astype(str) == contig].sort_values("x_coord")
+        xmin, xmax = region_by_contig[contig]
+        clipped_focus, _ignored_focus = _clip_focus_ranges(focus, xmin, xmax)
+        for start, end, group_index in clipped_focus:
+            matching = subset.loc[
+                (subset["x_coord"] >= start) & (subset["x_coord"] <= end),
+                ["variant_name", "variant_label"],
+            ]
+            if matching.empty:
+                continue
+            focus_hits.setdefault(group_index, set()).update(
+                (
+                    str(nt_change).strip(),
+                    _display_label_prefix(aa_change),
+                )
+                for nt_change, aa_change in matching.itertuples(index=False, name=None)
+            )
+    if ignored_focus_total:
+        print(
+            f"Warning: ignored {ignored_focus_total} focus range(s) outside the plotted region"
+        )
+    focus_table_rows = []
+    if show_intersections:
+        focus_table_rows = [
+            (
+                _focus_group_name(
+                    (
+                        focus_group_labels[group_index]
+                        if group_index < len(focus_group_labels)
+                        else None
+                    ),
+                    group_index,
+                ),
+                _format_focus_table_column(
+                    [nt_change for nt_change, _aa_change in sorted(variants)],
+                    width=20,
+                ),
+                _format_focus_table_column(
+                    [aa_change for _nt_change, aa_change in sorted(variants)],
+                    width=24,
+                ),
+            )
+            for group_index, variants in sorted(focus_hits.items())
+            if variants
+        ]
+    show_focus_legend = any(
+        label and str(label).strip() for label in focus_group_labels
+    )
+    show_focus_table = bool(focus_table_rows)
+
     n_panels = len(selected_contigs)
+    n_columns = 2 if show_focus_legend else 1
+    n_rows = n_panels + (1 if show_focus_table else 0)
     fig = plt.figure(
-        figsize=(width, max(height, 2.1 * n_panels)),
+        figsize=(
+            width + (1.7 if show_focus_legend else 0.0),
+            max(height, 2.1 * n_panels + (1.2 if show_focus_table else 0.0)),
+        ),
         constrained_layout=True,
     )
     grid = GridSpec(
-        n_panels,
-        1,
+        n_rows,
+        n_columns,
         figure=fig,
-        hspace=0.35,
+        hspace=0.08,
+        width_ratios=[1.0, 0.18] if show_focus_legend else None,
+        height_ratios=[1.0] * n_panels + ([0.34] if show_focus_table else []),
     )
 
-    focus = list(focus_ranges or [])
     for idx, contig in enumerate(selected_contigs):
         ax = fig.add_subplot(grid[idx, 0])
         subset = plot_df[plot_df["chrom"].astype(str) == contig].sort_values("x_coord")
         xmin, xmax = region_by_contig[contig]
         clipped_focus, ignored_focus = _clip_focus_ranges(focus, xmin, xmax)
-        for focus_index, (start, end) in enumerate(clipped_focus):
+        for start, end, group_index in clipped_focus:
             ax.axvspan(
                 start,
                 end,
-                color=FOCUS_RANGE_COLORS[focus_index % len(FOCUS_RANGE_COLORS)],
-                alpha=0.25,
+                color=FOCUS_RANGE_COLORS[group_index % len(FOCUS_RANGE_COLORS)],
+                alpha=0.34,
                 zorder=0,
-            )
-        if ignored_focus:
-            print(
-                f"Warning: ignored {ignored_focus} focus range(s) outside the plotted region"
             )
 
         for row in subset.itertuples(index=False):
             af_values = [float(value) for value in cast(list[float], row.af_values)]
+            plotted_af_values = [
+                value if value > 0 else detection_floor for value in af_values
+            ]
             if af_values:
                 ax.vlines(
                     float(row.x_coord),
-                    min(af_values),
-                    max(af_values),
+                    min(plotted_af_values),
+                    max(plotted_af_values),
                     color="#607d8b",
                     linewidth=0.9,
                     alpha=0.55,
                     zorder=1,
                 )
             ax.scatter(
-                [float(row.x_coord)] * len(af_values),
-                af_values,
+                [float(row.x_coord)] * len(plotted_af_values),
+                plotted_af_values,
                 s=18,
                 alpha=0.45,
                 color="#1f77b4",
                 edgecolors="none",
                 zorder=2,
             )
-        ax.axhline(0.5, color="black", linestyle="--", linewidth=0.8, alpha=0.4)
+        ax.axhline(
+            detection_floor,
+            color="black",
+            linestyle="--",
+            linewidth=0.8,
+            alpha=0.35,
+        )
         ax.set_ylim(0, 1.02)
         ax.set_ylabel("Allele frequency")
         ax.set_xlim(xmin, xmax)
-        ax.set_title(str(contig), loc="left", fontsize=10, fontweight="bold")
-        ax.set_xlabel("Amino-acid position" if aa_scale else "Genomic position")
-        for spine in ("top", "right"):
-            ax.spines[spine].set_visible(False)
+        ax.set_title(f"Reference: {contig}", loc="left", fontsize=10, fontweight="bold")
+        ax.set_xlabel(
+            _genome_axis_label(gene=gene, aa_scale=aa_scale, cds_scale=cds_scale)
+        )
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_color("black")
+            spine.set_linewidth(1.0)
+
+    if show_focus_legend:
+        legend_ax = fig.add_subplot(grid[:n_panels, 1])
+        legend_ax.axis("off")
+        handles = [
+            Patch(
+                facecolor=FOCUS_RANGE_COLORS[group_index % len(FOCUS_RANGE_COLORS)],
+                edgecolor="none",
+                alpha=0.35,
+                label=_focus_group_name(label, group_index),
+            )
+            for group_index, label in enumerate(focus_group_labels)
+            if label and str(label).strip()
+        ]
+        if handles:
+            legend_ax.legend(
+                handles=handles,
+                title="Focus regions",
+                loc="upper left",
+                frameon=True,
+                framealpha=0.9,
+                fontsize=8,
+                title_fontsize=9,
+                borderpad=0.5,
+                handlelength=1.6,
+                handletextpad=0.6,
+                labelspacing=0.35,
+            )
+
+    if show_focus_table:
+        table_ax = fig.add_subplot(grid[n_panels, 0])
+        table_ax.axis("off")
+        table_ax.text(
+            0.0,
+            0.94,
+            "Intersecting Variants",
+            transform=table_ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            fontweight="bold",
+        )
+        max_nt_chars = max(
+            len(nt_values.replace("\n", ", ")) for _, nt_values, _ in focus_table_rows
+        )
+        max_aa_chars = max(
+            len(aa_values.replace("\n", ", ")) for _, _, aa_values in focus_table_rows
+        )
+        table_width = min(
+            0.96, max(0.62, 0.22 + (max_nt_chars / 120.0) + (max_aa_chars / 110.0))
+        )
+        table = table_ax.table(
+            cellText=[
+                [region, nt_change, aa_change]
+                for region, nt_change, aa_change in focus_table_rows
+            ],
+            colLabels=["Region", "NT Change", "AA Change"],
+            colLoc="left",
+            cellLoc="left",
+            colWidths=[0.14, 0.26, 0.60],
+            bbox=Bbox.from_bounds(0.0, 0.10, table_width, 0.74),
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(8)
+        table.scale(1.0, 1.2)
+        for (row_idx, col_idx), cell in table.get_celld().items():
+            cell.set_edgecolor("#d0d0d0")
+            if row_idx == 0:
+                cell.set_facecolor("#f5f5f5")
+                cell.set_text_props(weight="bold")
+            elif col_idx == 0:
+                cell.set_facecolor("#fafafa")
 
     if title:
         fig.suptitle(title, fontweight="bold")

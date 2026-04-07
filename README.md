@@ -271,19 +271,20 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 
 ### Mode-specific options
 
-- `vartracker vcf` – accepts plotting and filtering options such as `--min-snv-freq`, `--min-indel-freq`,
-  `--allele-frequency-tag`, `--heatmap-aa-exclude`, `--heatmap-aa-include`, `--name`, `--outdir`, `--sample-cap`, `--manifest-level`, and literature controls
+- `vartracker vcf` – accepts core analysis options such as `--min-snv-freq`, `--min-indel-freq`,
+  `--allele-frequency-tag`, `--name`, `--outdir`, `--sample-cap`, `--manifest-level`, and literature controls
   (`--search-pokay`, `--literature-csv`). Use `--test` to run the bundled smoke test.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
   `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
 - `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
-- `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV.
+- `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV, including all heatmap customization filters.
 - `vartracker plot genome` – plot SNP positions along the genome or a selected gene region using all observed allele-frequency values for each variant.
 - `vartracker plot trajectory` – plot allele-frequency trajectories for a selected or auto-ranked subset of variants, optionally in takeover mode using threshold lines and threshold-based filtering.
 - `vartracker plot turnover` – plot new-versus-lost longitudinal turnover from the filtered result set.
 - `vartracker plot lifespan` – plot first-to-last detection spans for a selected or auto-ranked subset of variants.
 
 Heatmap filtering:
+- `vcf`, `bam`, and `end-to-end` always write the default heatmap. To customize heatmap content after a run, use `vartracker plot heatmap results.csv [options]`.
 - By default, all consequence classes are included except joint variants. Use `--heatmap-include-joint` to show joint variants.
 - `--heatmap-aa-exclude`: comma-separated `type_of_change` patterns to exclude. Wildcards are supported.
 - `--heatmap-aa-include`: comma-separated `type_of_change` patterns to include.
@@ -319,7 +320,11 @@ Standalone plot output:
 Genome plot options:
 - `--gene`: zoom to a single gene region.
 - `--aa-scale`: with `--gene`, use amino-acid coordinates on the x-axis.
-- `--focus-coords`: highlight nucleotide or amino-acid coordinate ranges, depending on the current x-axis mode.
+- `--cds-scale`: with `--gene`, use CDS-relative nucleotide coordinates on the x-axis.
+- `--focus-coords`: highlight nucleotide or amino-acid coordinate ranges, depending on the current x-axis mode. Separate color groups with `;`, ranges within a group with `,`, and optionally prefix a group with `Name:`.
+- `--focus-region-file`: read named focus region groups from a `.json`, `.csv`, or `.tsv` file for an inset legend.
+- `--show-intersections`: add a compact `Region | Variant` table below the genome plot for highlighted-region hits.
+- In the genome plot, undetected samples are rendered at the detection threshold rather than zero; by default this floor is `0.03`, or `--min-af` if supplied, and the dashed guide line follows that same threshold.
 - `--include-indels`: opt in to plotting indels too. This may be ambiguous or hard to interpret.
 - The standalone genome plot auto-discovers `reference_features.json` beside `results.csv`; workflow runs generate this sidecar automatically.
 
@@ -333,7 +338,12 @@ Standalone plot examples:
 - `vartracker plot genome results.csv`
 - `vartracker plot genome results.csv --gene F`
 - `vartracker plot genome results.csv --gene F --aa-scale`
+- `vartracker plot genome results.csv --gene F --cds-scale --focus-coords "184-210,586-630"`
 - `vartracker plot genome results.csv --focus-coords "150-300,900-1800"`
+- `vartracker plot genome results.csv --focus-coords "62-69,196-210;31-42,323-332,379-399;254-277"`
+- `vartracker plot genome results.csv --gene F --aa-scale --focus-coords "Ø:62-69,196-210;I:31-42,323-332,379-399;II:254-277"`
+- `vartracker plot genome results.csv --gene F --aa-scale --focus-coords "Ø:62-69,196-210;I:31-42,323-332,379-399" --show-intersections`
+- `vartracker plot genome results.csv --focus-region-file fusion_regions.json`
 - `vartracker plot genome results.csv --gene F --aa-scale --focus-coords "50-120,180-220"`
 - `vartracker plot turnover results.csv`
 - `vartracker plot trajectory results.csv --variants "S:D614G,S:E484K"`

@@ -293,9 +293,7 @@ def test_search_pokay_retains_parsed_database_csv(tmp_path, monkeypatch, minimal
     assert (outdir / "literature_database.csv").exists()
 
 
-def test_vcf_heatmap_options_are_forwarded_to_heatmap(
-    monkeypatch, tmp_path, minimal_vcf
-):
+def test_vcf_workflow_uses_default_heatmap_options(monkeypatch, tmp_path, minimal_vcf):
     coverage_path = tmp_path / "sample.cov.txt"
     coverage_path.write_text("NC_045512.2\t266\t100\n", encoding="utf-8")
 
@@ -367,57 +365,29 @@ def test_vcf_heatmap_options_are_forwarded_to_heatmap(
             str(csv_path),
             "--outdir",
             str(tmp_path / "results"),
-            "--heatmap-aa-exclude",
-            "synonymous,*frameshift*,stop_gained",
-            "--heatmap-aa-include",
-            "missense",
-            "--heatmap-only-persistent",
-            "--heatmap-only-new",
-            "--heatmap-gene-include",
-            "S",
-            "--heatmap-gene-exclude",
-            "N",
-            "--heatmap-variant-type",
-            "snp",
-            "--heatmap-qc",
-            "PASS",
-            "--min-prop-passing-qc",
-            "0.75",
-            "--heatmap-min-persistence",
-            "2",
-            "--heatmap-min-max-af",
-            "0.4",
-            "--heatmap-min-sample-af",
-            "0.3",
-            "--heatmap-sample-subset",
-            "Sample1",
-            "--heatmap-hide-singletons",
-            "--heatmap-min-depth",
-            "20",
         ]
     )
 
     assert exit_code == 0
-    assert recorded["excluded_consequence_types"] == [
-        "synonymous",
-        "*frameshift*",
-        "stop_gained",
-    ]
-    assert recorded["included_consequence_types"] == ["missense"]
-    assert recorded["include_joint"] is False
-    assert recorded["only_persistent"] is True
-    assert recorded["only_new"] is True
-    assert recorded["gene_include"] == ["S"]
-    assert recorded["gene_exclude"] == ["N"]
-    assert recorded["variant_type_include"] == ["snp"]
-    assert recorded["qc_include"] == ["PASS"]
-    assert recorded["min_prop_passing_qc"] == 0.75
-    assert recorded["min_persistence"] == 2
-    assert recorded["min_max_af"] == 0.4
-    assert recorded["min_sample_af"] == 0.3
-    assert recorded["sample_subset"] == ["Sample1"]
-    assert recorded["hide_singletons"] is True
-    assert recorded["min_depth"] == 20
+    for key in (
+        "excluded_consequence_types",
+        "included_consequence_types",
+        "include_joint",
+        "only_persistent",
+        "only_new",
+        "gene_include",
+        "gene_exclude",
+        "variant_type_include",
+        "qc_include",
+        "min_prop_passing_qc",
+        "min_persistence",
+        "min_max_af",
+        "min_sample_af",
+        "sample_subset",
+        "hide_singletons",
+        "min_depth",
+    ):
+        assert key not in recorded
 
 
 def test_plot_heatmap_replots_results_csv(monkeypatch, tmp_path):
@@ -749,10 +719,101 @@ def test_plot_genome_uses_sidecar_metadata(monkeypatch, tmp_path):
     assert recorded["rows"] == 6
     assert recorded["gene"] == "S"
     assert recorded["aa_scale"] is True
-    assert recorded["focus_ranges"] == [(50.0, 120.0), (180.0, 220.0)]
+    assert recorded["focus_ranges"] == [(50.0, 120.0, 0), (180.0, 220.0, 1)]
+    assert recorded["focus_labels"] == [None, None]
     assert recorded["min_af"] == 0.2
     assert recorded["include_indels"] is False
+    assert recorded["show_intersections"] is False
     assert recorded["metadata"]["contig_order"] == ["segA", "segB"]
+
+
+def test_plot_genome_named_focus_regions_are_forwarded(monkeypatch, tmp_path):
+    results_csv = tmp_path / "results.csv"
+    _write_plot_results_csv(results_csv, n_variants=4)
+    _write_reference_features_json(tmp_path / "reference_features.json")
+
+    recorded = {}
+
+    def fake_genome(_table, _metadata, **kwargs):
+        recorded.update(kwargs)
+
+    monkeypatch.setattr(main_module, "plot_variant_genome", fake_genome)
+
+    exit_code = main_module.main(
+        [
+            "plot",
+            "genome",
+            str(results_csv),
+            "--focus-coords",
+            "I:50-120,180-220;II:300-330",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["focus_ranges"] == [
+        (50.0, 120.0, 0),
+        (180.0, 220.0, 0),
+        (300.0, 330.0, 1),
+    ]
+    assert recorded["focus_labels"] == ["I", "II"]
+
+
+def test_plot_genome_cds_scale_is_forwarded(monkeypatch, tmp_path):
+    results_csv = tmp_path / "results.csv"
+    _write_plot_results_csv(results_csv, n_variants=4)
+    _write_reference_features_json(tmp_path / "reference_features.json")
+
+    recorded = {}
+
+    def fake_genome(_table, _metadata, **kwargs):
+        recorded.update(kwargs)
+
+    monkeypatch.setattr(main_module, "plot_variant_genome", fake_genome)
+
+    exit_code = main_module.main(
+        [
+            "plot",
+            "genome",
+            str(results_csv),
+            "--gene",
+            "S",
+            "--cds-scale",
+            "--focus-coords",
+            "10-30",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["gene"] == "S"
+    assert recorded["cds_scale"] is True
+    assert recorded["focus_ranges"] == [(10.0, 30.0, 0)]
+
+
+def test_plot_genome_show_intersections_is_forwarded(monkeypatch, tmp_path):
+    results_csv = tmp_path / "results.csv"
+    _write_plot_results_csv(results_csv, n_variants=4)
+    _write_reference_features_json(tmp_path / "reference_features.json")
+
+    recorded = {}
+
+    def fake_genome(_table, _metadata, **kwargs):
+        recorded.update(kwargs)
+
+    monkeypatch.setattr(main_module, "plot_variant_genome", fake_genome)
+
+    exit_code = main_module.main(
+        [
+            "plot",
+            "genome",
+            str(results_csv),
+            "--focus-coords",
+            "I:50-120,180-220",
+            "--show-intersections",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["show_intersections"] is True
 
 
 def test_plot_genome_include_indels_is_forwarded(monkeypatch, tmp_path):

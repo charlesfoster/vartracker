@@ -44,7 +44,6 @@ from .analysis import (
 from .plotting import (
     DEFAULT_LIFESPAN_TOP_N,
     DEFAULT_TRAJECTORY_TOP_N,
-    _parse_focus_ranges,
     apply_shared_plot_filters,
     auto_select_variants,
     load_reference_feature_metadata,
@@ -58,6 +57,7 @@ from .plotting import (
     plot_variant_turnover,
     prepare_plot_inputs,
     _project_name_from_results,
+    resolve_focus_regions,
     resolve_plot_output_path,
     write_reference_feature_metadata,
 )
@@ -631,7 +631,6 @@ def _configure_vcf_parser(
 
     analysis_group = parser.add_argument_group("Vartracker Analysis Options")
     output_group = parser.add_argument_group("Vartracker Output Options")
-    heatmap_group = parser.add_argument_group("Heatmap")
 
     analysis_group.add_argument(
         "-r",
@@ -753,8 +752,6 @@ def _configure_vcf_parser(
         help="Keep temporary files for debugging",
         default=False,
     )
-
-    _add_heatmap_option_arguments(heatmap_group)
 
 
 def _move_action_group_after(
@@ -1235,6 +1232,9 @@ def _run_plot_genome_command(args):
         table = load_results_table(results_csv)
         project_name = _project_name_from_results(table, getattr(args, "name", None))
         metadata = load_reference_feature_metadata(results_csv)
+        focus_ranges, focus_labels = resolve_focus_regions(
+            args.focus_coords, args.focus_region_file
+        )
         output_path = resolve_plot_output_path(
             results_csv,
             out=args.out,
@@ -1248,13 +1248,16 @@ def _run_plot_genome_command(args):
             output_path=output_path,
             gene=args.gene,
             aa_scale=args.aa_scale,
-            focus_ranges=_parse_focus_ranges(args.focus_coords),
+            cds_scale=args.cds_scale,
+            focus_ranges=focus_ranges,
+            focus_labels=focus_labels,
             min_af=args.min_af,
             max_af=args.max_af,
             effects=_parse_csv_option_list(args.effect),
             persistent_only=args.persistent_only,
             new_only=args.new_only,
             include_indels=args.include_indels,
+            show_intersections=args.show_intersections,
             title=args.title
             or (
                 f"{project_name}: genome variant distribution" if project_name else None
@@ -1517,9 +1520,33 @@ def _add_plot_genome_subparser(subparsers):
         help="With --gene, plot x-axis in amino-acid coordinates for that gene",
     )
     parser.add_argument(
+        "--cds-scale",
+        action="store_true",
+        default=False,
+        help="With --gene, plot x-axis in CDS-relative nucleotide coordinates for that gene",
+    )
+    parser.add_argument(
         "--focus-coords",
         default="",
-        help="Comma-separated coordinate ranges to highlight, e.g. 150-300,900-1800",
+        help=(
+            "Coordinate ranges to highlight. Use commas for separate ranges or "
+            "semicolons to group ranges with the same color, e.g. "
+            "150-300,900-1800;50-120 or Name:150-300,900-1800;Other:50-120"
+        ),
+    )
+    parser.add_argument(
+        "--focus-region-file",
+        default="",
+        help=(
+            "Optional JSON/CSV/TSV file defining named focus region groups for the "
+            "genome plot"
+        ),
+    )
+    parser.add_argument(
+        "--show-intersections",
+        action="store_true",
+        default=False,
+        help="Show a compact table of variants intersecting the highlighted focus regions",
     )
     parser.add_argument("--title", default=None, help="Optional plot title")
     parser.add_argument(
@@ -2586,7 +2613,6 @@ def _process_files(
         literature_hits=literature_hits_df,
         literature_table_path=literature_full_csv_path,
         cli_command=cli_command,
-        **_collect_heatmap_kwargs(args),
     )
 
     # Write specialized tables
