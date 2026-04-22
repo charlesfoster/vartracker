@@ -14,6 +14,9 @@ The recommended micromamba environment pins the same versions for reproducibilit
 | snakemake | 9.0.1 | 9.0.1 | Snakemake API used for workflows. |
 | bgzip | 1.21 | 1.21 (via htslib) | Provided by htslib; used for VCF compression. |
 
+Consensus FASTA outputs in `bam` and `end-to-end` mode are produced with
+`bcftools consensus` and `samtools depth`; `bedtools` is not required.
+
 If you validate compatibility with older tool versions, update the minimum tested version here and
 consider expanding CI coverage.
 

@@ -164,7 +164,7 @@ def format_vcf(
     allele_frequency_tag="AF",
 ):
     """
-    Format VCF file for compatibility and add consequences.
+    Format VCF file for compatibility and filter variants before merging.
 
     Args:
         vcf (str): Path to input VCF file
@@ -178,6 +178,7 @@ def format_vcf(
         allele_frequency_tag (str): INFO tag name for allele frequency (default: AF)
     """
     out, csq_file, log = _derive_vcf_output_paths(vcf, tempdir, sample)
+    raw_out = os.path.join(tempdir, f"{Path(out).stem}.raw.vcf.gz")
 
     try:
         prepared_vcf = _ensure_format_and_sample(vcf, sample, tempdir, debug)
@@ -251,7 +252,7 @@ def format_vcf(
             else:
                 header_lines.append(normalized_line)
         header_str = "\n".join(header_lines) + "\n"
-        w = Writer.from_string(out, header_str, mode="wz")
+        w = Writer.from_string(raw_out, header_str, mode="wz")
         variants = {}
 
         def _scalar(value):
@@ -313,21 +314,28 @@ def format_vcf(
             w.write_record(variant)
         w.close()
 
-        # Index the output file
-        cmd = f"bcftools index -f {out}"
+        # Index the intermediate output file
+        cmd = f"bcftools index -f {raw_out}"
         subprocess.run(cmd, shell=True, check=True)
 
-        # Run csq before merging for better AF filtering
+        # Filter variants before the cross-sample merge. Consequence annotation is
+        # run only after merging so BCSQ reflects the sample-specific haplotype at
+        # each longitudinal timepoint.
         cmd = (
             f'bcftools view -i \'(INFO/AF >= {min_snv_freq} & INFO/TYPE == "SNP") | '
-            f'(INFO/AF >= {min_indel_freq} & INFO/TYPE == "INDEL")\' {out} | '
-            f"bcftools csq -f {reference} -g {annotation} --force -Oz -o {csq_file}; "
-            f"tabix -f -p vcf {csq_file}"
+            f'(INFO/AF >= {min_indel_freq} & INFO/TYPE == "INDEL")\' {raw_out} '
+            f"-Oz -o {out}"
         )
 
         try:
             with open(log, "a", encoding="utf-8") as err:
                 subprocess.run(cmd, shell=True, stderr=err, check=True)
+                subprocess.run(
+                    f"bcftools index -f {out}",
+                    shell=True,
+                    stderr=err,
+                    check=True,
+                )
         except subprocess.CalledProcessError as exc:
             log_tail = ""
             if os.path.exists(log):
@@ -355,7 +363,7 @@ def format_vcf(
 
 def merge_consequences(tempdir, csq_file, sample_names, debug):
     """
-    Merge VCF files with consequences.
+    Merge per-sample VCF files before consequence annotation.
 
     Args:
         tempdir (str): Temporary directory path
@@ -392,6 +400,22 @@ def merge_consequences(tempdir, csq_file, sample_names, debug):
         subprocess.run(cmd, shell=True, check=True)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Error merging VCF files: {str(e)}")
+
+
+def annotate_vcf(vcf_file, output_file, reference, annotation, debug):
+    """Annotate a merged multi-sample VCF with bcftools csq."""
+    cmd = (
+        f"bcftools csq -f {reference} -g {annotation} --force "
+        f"-Ov -o {output_file} {vcf_file}"
+    )
+
+    if debug:
+        print(f"Command: {cmd}")
+
+    try:
+        subprocess.run(cmd, shell=True, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Error annotating merged VCF with bcftools csq: {str(e)}")
 
 
 def calculate_variant_site_depths(cov_df, v, samples, min_depth: int):
@@ -484,6 +508,95 @@ def calculate_variant_site_depths(cov_df, v, samples, min_depth: int):
     return result
 
 
+def _summarise_sample_trajectory(allele_freqs, samples):
+    """Derive trajectory metadata from per-sample allele frequencies."""
+    presence_absence = ["N" if x == "." else "Y" for x in allele_freqs]
+    variant_status = "new" if allele_freqs[0] == "." else "original"
+
+    if allele_freqs[0] != "." and allele_freqs[-1] == ".":
+        persistent_status = "original_lost"
+    elif allele_freqs[0] != "." and allele_freqs[-1] != ".":
+        persistent_status = "original_retained"
+    elif allele_freqs[0] == "." and allele_freqs[-1] != ".":
+        persistent_status = "new_persistent"
+    elif allele_freqs[0] == "." and allele_freqs[-1] == ".":
+        persistent_status = "new_transient"
+    else:
+        persistent_status = "unknown"
+
+    first_appearance = (
+        samples[presence_absence.index("Y")] if "Y" in presence_absence else "None"
+    )
+    last_appearance = (
+        samples[rindex(presence_absence, "Y")] if "Y" in presence_absence else "None"
+    )
+
+    return {
+        "presence_absence": presence_absence,
+        "variant_status": variant_status,
+        "persistent_status": persistent_status,
+        "first_appearance": first_appearance,
+        "last_appearance": last_appearance,
+    }
+
+
+def _extract_scalar_mask(value) -> int:
+    if isinstance(value, np.ndarray):
+        if value.size == 0:
+            return 0
+        value = value.flat[0]
+    elif isinstance(value, (list, tuple)):
+        if not value:
+            return 0
+        value = value[0]
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _decode_sample_bcsq_annotations(v, samples, annotations):
+    """Decode FORMAT/BCSQ bitmasks into sample-specific annotation assignments."""
+    if not annotations:
+        return {}
+
+    try:
+        mask_values = v.format("BCSQ")
+    except (KeyError, AttributeError, ValueError, RuntimeError):
+        return {}
+
+    if mask_values is None:
+        return {}
+
+    decoded = {}
+    for sample, sample_mask in zip(samples, mask_values):
+        bitmask = _extract_scalar_mask(sample_mask)
+        matches = []
+        for idx, annotation in enumerate(annotations):
+            first_haplotype_bit = 1 << (2 * idx)
+            second_haplotype_bit = 1 << (2 * idx + 1)
+            if bitmask & first_haplotype_bit or bitmask & second_haplotype_bit:
+                matches.append(annotation)
+        decoded[sample] = matches
+
+    return decoded
+
+
+def _mask_allele_frequencies_for_annotation(
+    annotation, allele_freqs, samples, sample_bcsq_map
+):
+    """Keep allele frequencies only for samples where the annotation applies."""
+    masked = []
+    for sample, allele_freq in zip(samples, allele_freqs):
+        if allele_freq == ".":
+            masked.append(".")
+            continue
+        masked.append(
+            allele_freq if annotation in sample_bcsq_map.get(sample, []) else "."
+        )
+    return masked
+
+
 def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
     """
     Process VCF file and extract variant information.
@@ -565,20 +678,7 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
                     allele_freqs.append(".")
             if not allele_freqs:
                 allele_freqs = ["."] * max(1, len(samples))
-        presence_absence = ["N" if x == "." else "Y" for x in allele_freqs]
-        variant_status = "new" if allele_freqs[0] == "." else "original"
-
-        # Calculate persistence status
-        if allele_freqs[0] != "." and allele_freqs[-1] == ".":
-            persistent_status = "original_lost"
-        elif allele_freqs[0] != "." and allele_freqs[-1] != ".":
-            persistent_status = "original_retained"
-        elif allele_freqs[0] == "." and allele_freqs[-1] != ".":
-            persistent_status = "new_persistent"
-        elif allele_freqs[0] == "." and allele_freqs[-1] == ".":
-            persistent_status = "new_transient"
-        else:
-            persistent_status = "unknown"
+        trajectory = _summarise_sample_trajectory(allele_freqs, samples)
 
         depths_qc = calculate_variant_site_depths(cov_df, v, samples, min_depth)
         all_samples_pass_qc = "F" not in depths_qc["variant_qc"]
@@ -588,45 +688,71 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
             if depths_qc["variant_qc"]
             else 0.0
         )
-        first_appearance = (
-            samples[presence_absence.index("Y")] if "Y" in presence_absence else "None"
-        )
-        last_appearance = (
-            samples[rindex(presence_absence, "Y")]
-            if "Y" in presence_absence
-            else "None"
-        )
 
         # Process annotations
         if "BCSQ" in info:
             annotations = v.INFO["BCSQ"].split(",")
-            for annot in annotations:
-                anno = annot.split("|")
-                result = _process_annotation(
-                    v,
-                    anno,
-                    variant_status,
-                    persistent_status,
-                    presence_absence,
-                    first_appearance,
-                    last_appearance,
-                    all_samples_pass_qc,
-                    proportion_samples_passing_qc,
-                    depths_qc,
-                    allele_freqs,
-                    samples,
-                    total_cov_list,
-                )
-                results.append(result)
+            sample_bcsq_map = _decode_sample_bcsq_annotations(v, samples, annotations)
+            produced_annotation_specific_row = False
+
+            if sample_bcsq_map:
+                for annot in annotations:
+                    masked_allele_freqs = _mask_allele_frequencies_for_annotation(
+                        annot, allele_freqs, samples, sample_bcsq_map
+                    )
+                    masked_trajectory = _summarise_sample_trajectory(
+                        masked_allele_freqs, samples
+                    )
+                    if "Y" not in masked_trajectory["presence_absence"]:
+                        continue
+
+                    anno = annot.split("|")
+                    result = _process_annotation(
+                        v,
+                        anno,
+                        masked_trajectory["variant_status"],
+                        masked_trajectory["persistent_status"],
+                        masked_trajectory["presence_absence"],
+                        masked_trajectory["first_appearance"],
+                        masked_trajectory["last_appearance"],
+                        all_samples_pass_qc,
+                        proportion_samples_passing_qc,
+                        depths_qc,
+                        masked_allele_freqs,
+                        samples,
+                        total_cov_list,
+                    )
+                    results.append(result)
+                    produced_annotation_specific_row = True
+
+            if not produced_annotation_specific_row:
+                for annot in annotations:
+                    anno = annot.split("|")
+                    result = _process_annotation(
+                        v,
+                        anno,
+                        trajectory["variant_status"],
+                        trajectory["persistent_status"],
+                        trajectory["presence_absence"],
+                        trajectory["first_appearance"],
+                        trajectory["last_appearance"],
+                        all_samples_pass_qc,
+                        proportion_samples_passing_qc,
+                        depths_qc,
+                        allele_freqs,
+                        samples,
+                        total_cov_list,
+                    )
+                    results.append(result)
         else:
             # Handle variants without annotations
             result = _create_unannotated_result(
                 v,
-                variant_status,
-                persistent_status,
-                presence_absence,
-                first_appearance,
-                last_appearance,
+                trajectory["variant_status"],
+                trajectory["persistent_status"],
+                trajectory["presence_absence"],
+                trajectory["first_appearance"],
+                trajectory["last_appearance"],
                 all_samples_pass_qc,
                 proportion_samples_passing_qc,
                 depths_qc,

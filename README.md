@@ -99,6 +99,7 @@ Minimum tested versions are tracked in `docs/DEPENDENCIES.md`.
 - **samtools**, **lofreq**, **fastp**, **bwa**, and **snakemake** – required for the `bam` and `end-to-end` Snakemake workflows
 
 If you only plan to run `vartracker vcf` against pre-generated VCFs, the first pair is sufficient. The additional tools are needed whenever you ask vartracker to align reads or call variants for you.
+Consensus genome generation in the `bam` and `end-to-end` workflows uses `bcftools` and `samtools`; it does not require `bedtools`.
 
 Note: the pinned micromamba environment installs `tabix`/`bgzip` via `htslib`.
 
@@ -204,8 +205,10 @@ vartracker end-to-end path/to/read_inputs.csv \
 
 # Re-plot a heatmap from an existing vartracker results file
 vartracker plot heatmap results/results.csv \
-  --heatmap-aa-exclude "*frameshift*" \
-  --outdir results/replots
+  --aa-exclude "*frameshift*" \
+  --x-labels sample-number \
+  --literature-csv results/sample.literature_database_hits.full.csv \
+  --title "Variant allele frequencies"
 
 # Plot whole-dataset turnover from an existing results file
 vartracker plot turnover results/results.csv
@@ -262,6 +265,17 @@ Mode-specific expectations:
 - **BAM mode** requires `bam` and will fill `vcf` + `coverage` during the workflow.
 - **End-to-end mode** requires `reads1` (and optionally `reads2`); remaining fields are generated.
 
+The `bam` and `end-to-end` workflows also write two consensus FASTA columns to
+the updated Snakemake spreadsheet: `consensus` for a simple consensus and
+`iupac_consensus` for an IUPAC-aware consensus. SNPs below
+`--consensus-snp-min-af` are ignored, SNPs from `--consensus-snp-min-af` up to
+`--consensus-snp-thresh` stay as reference bases in the simple consensus
+and become REF+ALT ambiguity codes in the IUPAC consensus, and SNPs at or above
+`--consensus-snp-thresh` become ALT bases. Indels are controlled
+separately by `--consensus-indel-thresh` in both consensus modes. Low-depth bases
+are masked as `N`, except for called deletion intervals so true deletions are not
+converted to low-depth masks.
+
 Relative paths are resolved with respect to the CSV location, so you can store the sheet alongside
 your sequencing artefacts. The `prepare spreadsheet` subcommand can scaffold a CSV and highlight missing files.
 
@@ -275,8 +289,11 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
   `--allele-frequency-tag`, `--name`, `--outdir`, `--sample-cap`, `--manifest-level`, and literature controls
   (`--search-pokay`, `--literature-csv`). Use `--test` to run the bundled smoke test.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
-  `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
-- `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
+  `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`,
+  `--rulegraph`, `--consensus-snp-min-af`, `--consensus-snp-thresh`, and
+  `--consensus-indel-thresh`.
+- `vartracker end-to-end` – similar to `bam`, with optional amplicon clipping controls:
+  `--primer-bed` and `--ampliconclip-tolerance` (default: `1`).
 - `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV, including all heatmap customization filters.
 - `vartracker plot genome` – plot SNP positions along the genome or a selected gene region using all observed allele-frequency values for each variant.
 - `vartracker plot trajectory` – plot allele-frequency trajectories for a selected or auto-ranked subset of variants, optionally in takeover mode using threshold lines and threshold-based filtering.
@@ -285,22 +302,25 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 
 Heatmap filtering:
 - `vcf`, `bam`, and `end-to-end` always write the default heatmap. To customize heatmap content after a run, use `vartracker plot heatmap results.csv [options]`.
-- By default, all consequence classes are included except joint variants. Use `--heatmap-include-joint` to show joint variants.
-- `--heatmap-aa-exclude`: comma-separated `type_of_change` patterns to exclude. Wildcards are supported.
-- `--heatmap-aa-include`: comma-separated `type_of_change` patterns to include.
-- `--heatmap-only-persistent`: only include `new_persistent` variants.
-- `--heatmap-only-new`: only include variants with `variant_status == new`.
-- `--heatmap-gene-include` and `--heatmap-gene-exclude`: comma-separated gene patterns.
-- `--heatmap-variant-type`: comma-separated variant-type patterns such as `snp` or `indel`.
-- `--heatmap-qc`: comma-separated `all_samples_pass_qc` patterns to include. Accepted values include `true`, `false`, `pass`, and `fail`.
+- By default, all consequence classes are included except joint variants. Use `--include-joint` to show joint variants.
+- `--aa-exclude`: comma-separated `type_of_change` patterns to exclude. Wildcards are supported.
+- `--aa-include`: comma-separated `type_of_change` patterns to include.
+- `--only-persistent`: only include `new_persistent` variants.
+- `--only-new`: only include variants with `variant_status == new`.
+- `--gene-include` and `--gene-exclude`: comma-separated gene patterns.
+- `--variant-type`: comma-separated variant-type patterns such as `snp` or `indel`.
+- `--qc`: comma-separated `all_samples_pass_qc` patterns to include. Accepted values include `true`, `false`, `pass`, and `fail`.
 - `--min-prop-passing-qc`: minimum fraction of samples that must pass per-sample QC.
-- `--heatmap-min-persistence`: minimum number of included samples in which the variant must be present.
-- `--heatmap-min-max-af`: minimum maximum allele frequency across included samples.
-- `--heatmap-min-sample-af`: minimum allele frequency that must be reached in at least one included sample.
-- `--heatmap-sample-subset`: comma-separated sample-name patterns to plot.
-- `--heatmap-hide-singletons`: hide variants present in only one included sample.
-- `--heatmap-min-depth`: minimum site depth a variant must reach in at least one included sample.
-- Example: `--heatmap-aa-exclude "synonymous,*frameshift*,stop_gained"`
+- `--min-persistence`: minimum number of included samples in which the variant must be present.
+- `--min-max-af`: minimum maximum allele frequency across included samples.
+- `--min-sample-af`: minimum allele frequency that must be reached in at least one included sample.
+- `--sample-subset`: comma-separated sample-name patterns to plot.
+- `--hide-singletons`: hide variants present in only one included sample.
+- `--min-depth`: minimum site depth a variant must reach in at least one included sample.
+- `--x-labels sample-number`: label heatmap x-axis columns by `sample_number` instead of sample name.
+- `--title`: set the heatmap plot title. The default is `Variant allele frequencies`.
+- `--literature-csv`: include literature links in the interactive HTML heatmap using a literature hits CSV.
+- Example: `--aa-exclude "synonymous,*frameshift*,stop_gained"`
 
 Standalone plot filtering:
 - `--gene`, `--effect`, `--min-af`, `--max-af`: restrict the plotted result set before ranking/selection.

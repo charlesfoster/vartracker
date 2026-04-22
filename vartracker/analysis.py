@@ -96,6 +96,34 @@ def _heatmap_figure_size(n_rows: int, n_cols: int) -> tuple[float, float]:
     return width, height
 
 
+def _presence_vector(value: object) -> tuple[str, ...]:
+    return tuple(_parse_slash_separated_tokens(value))
+
+
+def _find_joint_main_index(tab: pd.DataFrame, joint_index: int, main_pos: int) -> int:
+    candidates = tab[
+        (tab["start"] == main_pos)
+        & ~tab["bcsq_aa_notation"].astype(str).str.startswith("@", na=False)
+    ].index.tolist()
+    if not candidates:
+        raise IndexError(f"No main annotation found for joint position {main_pos}")
+    if len(candidates) == 1:
+        return candidates[0]
+
+    joint_presence = _presence_vector(tab.at[joint_index, "presence_absence"])
+
+    def candidate_key(candidate_index: int) -> tuple[int, int, int]:
+        candidate_presence = _presence_vector(tab.at[candidate_index, "presence_absence"])
+        exact_match = int(candidate_presence == joint_presence)
+        shared_present = sum(
+            lhs == rhs == "Y" for lhs, rhs in zip(joint_presence, candidate_presence)
+        )
+        total_present = sum(token == "Y" for token in candidate_presence)
+        return (exact_match, shared_present, total_present)
+
+    return max(candidates, key=candidate_key)
+
+
 def process_joint_variants(path):
     """
     Process joint variants from bcftools csq output.
@@ -124,7 +152,7 @@ def process_joint_variants(path):
         try:
             # Find the main pos and main index number
             main_pos = int(tab.loc[i]["bcsq_aa_notation"].replace("@", ""))
-            j = tab[tab["start"] == main_pos].index[0]
+            j = _find_joint_main_index(tab, i, main_pos)
 
             # Update the joint variant key
             tab.at[i, "joint_variant"] = True
@@ -937,13 +965,16 @@ def _write_interactive_heatmap_html(
     literature_df: Optional[pd.DataFrame],
     literature_table_path: Optional[str],
     cli_command: Optional[str],
+    sample_labels: Sequence[str] | None = None,
+    plot_title: str | None = None,
 ) -> None:
     if matrix.empty:
         return
 
-    x_labels = [str(name) for name in sample_names]
+    sample_keys = [str(name) for name in matrix.columns]
+    x_labels = [str(name) for name in (sample_labels or sample_names)]
     y_labels = list(matrix.index)
-    if not x_labels or not y_labels:
+    if not sample_keys or not x_labels or not y_labels:
         return
 
     label_map: Dict[str, str] = matrix.attrs.get("base_labels", {})
@@ -1007,14 +1038,14 @@ def _write_interactive_heatmap_html(
 
         row_values = matrix.loc[label]
         row_qc = qc_by_label.get(label, {})
-        for sample, value in zip(x_labels, row_values):
+        for sample_key, sample_label, value in zip(sample_keys, x_labels, row_values):
             freq = float(value) if value is not None else 0.0
             color, text_value = _frequency_to_color(freq)
-            qc_value = row_qc.get(sample, "")
+            qc_value = row_qc.get(sample_key, "")
             qc_failed = qc_value == "F"
             tooltip = html.escape(
                 f"Variant: {label.replace(chr(10), ' ')} • "
-                f"Sample: {sample} • "
+                f"Sample: {sample_label} • "
                 f"AF={freq:.2f}, QC={'FAIL' if qc_failed else 'PASS'}"
             )
             classes = ["cell"]
@@ -1037,7 +1068,7 @@ def _write_interactive_heatmap_html(
     )
     heatmap_scroll_html = f'<div class="heatmap-scroll">{heatmap_grid_html}</div>'
 
-    heatmap_title = (
+    heatmap_title = plot_title or (
         f"{project_name}: variant allele frequencies"
         if project_name
         else "Variant allele frequencies"
@@ -1329,6 +1360,8 @@ def generate_variant_heatmap(
     literature_hits: Optional[pd.DataFrame] = None,
     literature_table_path: Optional[str] = None,
     cli_command: Optional[str] = None,
+    x_tick_labels: Sequence[str] | None = None,
+    plot_title: str | None = None,
 ):
     """Generate a heatmap of variant allele frequencies across passages."""
 
@@ -1400,14 +1433,23 @@ def generate_variant_heatmap(
                     )
                 )
 
-        heatmap_title = (
+        heatmap_title = plot_title or (
             f"{project_name}: variant allele frequencies"
             if project_name
             else "Variant allele frequencies"
         )
         ax.set_title(heatmap_title, weight="bold")
 
-        tick_labels = list(sample_names)
+        display_label_by_sample = dict(
+            zip(
+                [str(name) for name in sample_names],
+                [str(label) for label in (x_tick_labels or sample_names)],
+            )
+        )
+        tick_labels = [
+            display_label_by_sample.get(str(sample), str(sample))
+            for sample in heatmap_data.columns
+        ]
         ax.set_xticklabels(tick_labels, rotation=45, ha="right")
         ax.tick_params(axis="y", labelsize=10)
         ax.set_xlabel("Sample", fontweight="bold")
@@ -1426,6 +1468,8 @@ def generate_variant_heatmap(
                 literature_hits,
                 literature_table_path,
                 cli_command,
+                sample_labels=tick_labels,
+                plot_title=heatmap_title,
             )
         except Exception as html_exc:  # pragma: no cover - best-effort UX
             print(f"Warning: failed to generate interactive heatmap: {html_exc}")

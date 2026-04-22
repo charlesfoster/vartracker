@@ -20,6 +20,26 @@ def test_cli_help_smoke():
     assert "usage" in out.lower() or "help" in out.lower()
 
 
+def test_plot_heatmap_help_uses_standalone_option_names():
+    exit_code, out = _run_main("plot", "heatmap", "-h")
+    assert exit_code == 0
+    assert "--aa-exclude" in out
+    assert "--include-joint" in out
+    assert "--title" in out
+    assert "--literature-csv" in out
+    assert "--x-labels" in out
+    heatmap_options = out.split("Heatmap options:", 1)[1]
+    assert "--title" in heatmap_options
+    assert "--literature-csv" in heatmap_options
+    assert "--x-labels" in heatmap_options
+    assert "--heatmap-aa-exclude" not in out
+    assert "--heatmap-include-joint" not in out
+    assert "--outdir" not in out
+    assert "--name" not in out
+    assert "--min-snv-freq" not in out
+    assert "--min-indel-freq" not in out
+
+
 def test_cli_version_option():
     exit_code, out = _run_main("--version")
     assert exit_code == 0

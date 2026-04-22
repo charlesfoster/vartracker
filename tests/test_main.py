@@ -47,7 +47,7 @@ def test_drop_exact_duplicate_result_rows_removes_only_exact_duplicates(capsys):
         {"variant": "A1C", "gene": "S", "amino_acid_consequence": "S:A1C"},
         {"variant": "A1C", "gene": "N", "amino_acid_consequence": "N:A1C"},
     ]
-    assert "Removed 1 exact duplicate result rows." in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
 
 
 def test_prepare_reference_command_invokes_bundle(monkeypatch, tmp_path):
@@ -172,6 +172,7 @@ def test_main_resolves_relative_paths(tmp_path, monkeypatch, minimal_vcf):
         lambda *a, **k: (str(tmp_path / "formatted.vcf.gz"), str(formatted_csq)),
     )
     monkeypatch.setattr(main_module, "merge_consequences", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "annotate_vcf", lambda *a, **k: None)
     monkeypatch.setattr(
         main_module,
         "process_vcf",
@@ -248,6 +249,7 @@ def test_search_pokay_retains_parsed_database_csv(tmp_path, monkeypatch, minimal
         lambda *a, **k: (str(tmp_path / "formatted.vcf.gz"), str(formatted_csq)),
     )
     monkeypatch.setattr(main_module, "merge_consequences", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "annotate_vcf", lambda *a, **k: None)
     monkeypatch.setattr(
         main_module,
         "process_vcf",
@@ -341,6 +343,7 @@ def test_vcf_workflow_uses_default_heatmap_options(monkeypatch, tmp_path, minima
         lambda *a, **k: (str(tmp_path / "formatted.vcf.gz"), str(formatted_csq)),
     )
     monkeypatch.setattr(main_module, "merge_consequences", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "annotate_vcf", lambda *a, **k: None)
     monkeypatch.setattr(
         main_module,
         "process_vcf",
@@ -393,42 +396,61 @@ def test_vcf_workflow_uses_default_heatmap_options(monkeypatch, tmp_path, minima
 def test_plot_heatmap_replots_results_csv(monkeypatch, tmp_path):
     results_csv = tmp_path / "results.csv"
     results_csv.write_text(
-        "samples,name,alt_freq,variant_site_depth,presence_absence,variant_status,persistence_status,type_of_variant,type_of_change,gene,variant,start\n"
-        "P0 / P1,Example,0.0 / 0.5,0 / 100,N / Y,new,new_persistent,snp,missense,S,A266C,266\n",
+        "samples,sample_number,name,alt_freq,variant_site_depth,presence_absence,variant_status,persistence_status,type_of_variant,type_of_change,gene,variant,start\n"
+        "P0 / P1,0 / 1,Example,0.0 / 0.5,0 / 100,N / Y,new,new_persistent,snp,missense,S,A266C,266\n",
         encoding="utf-8",
     )
 
     recorded = {}
+    literature_csv = tmp_path / "literature_hits.csv"
+    literature_csv.write_text(
+        "gene,amino_acid_consequence,information,reference\n"
+        "S,S:A266C,Mock evidence,PMID123\n",
+        encoding="utf-8",
+    )
 
     def fake_heatmap(*args, **kwargs):
         recorded["table"] = args[0]
         recorded["sample_names"] = args[1]
+        recorded["sample_numbers"] = args[2]
         recorded["outdir"] = args[3]
         recorded["project_name"] = args[4]
+        recorded["min_snv_freq"] = args[5]
+        recorded["min_indel_freq"] = args[6]
         recorded["kwargs"] = kwargs
 
     monkeypatch.setattr(main_module, "generate_variant_heatmap", fake_heatmap)
 
-    outdir = tmp_path / "plots"
     exit_code = main_module.main(
         [
             "plot",
             "heatmap",
             str(results_csv),
-            "--outdir",
-            str(outdir),
-            "--heatmap-aa-exclude",
+            "--aa-exclude",
             "*frameshift*",
-            "--heatmap-include-joint",
+            "--include-joint",
+            "--title",
+            "Custom heatmap",
+            "--x-labels",
+            "sample-number",
+            "--literature-csv",
+            str(literature_csv),
         ]
     )
 
     assert exit_code == 0
     assert list(recorded["sample_names"]) == ["P0", "P1"]
-    assert recorded["outdir"] == str(outdir)
-    assert recorded["project_name"] == "Example"
+    assert list(recorded["sample_numbers"]) == ["0", "1"]
+    assert recorded["outdir"] == str(tmp_path)
+    assert recorded["project_name"] == ""
+    assert recorded["min_snv_freq"] == 0.03
+    assert recorded["min_indel_freq"] == 0.1
     assert recorded["kwargs"]["excluded_consequence_types"] == ["*frameshift*"]
     assert recorded["kwargs"]["include_joint"] is True
+    assert recorded["kwargs"]["x_tick_labels"] == ["0", "1"]
+    assert recorded["kwargs"]["plot_title"] == "Custom heatmap"
+    assert recorded["kwargs"]["literature_table_path"] == str(literature_csv.resolve())
+    assert recorded["kwargs"]["literature_hits"]["gene"].tolist() == ["S"]
 
 
 def _write_plot_results_csv(path: Path, n_variants: int = 4) -> None:
@@ -907,6 +929,7 @@ def test_vcf_workflow_writes_default_genome_plot(monkeypatch, tmp_path, minimal_
         lambda *a, **k: (str(tmp_path / "formatted.vcf.gz"), str(formatted_csq)),
     )
     monkeypatch.setattr(main_module, "merge_consequences", lambda *a, **k: None)
+    monkeypatch.setattr(main_module, "annotate_vcf", lambda *a, **k: None)
     monkeypatch.setattr(
         main_module,
         "process_vcf",
@@ -993,6 +1016,14 @@ def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
             "ref.fasta",
             "--snakemake-outdir",
             str(tmp_path / "snakemake"),
+            "--consensus-snp-min-af",
+            "0.20",
+            "--consensus-snp-thresh",
+            "0.80",
+            "--consensus-indel-thresh",
+            "0.70",
+            "--ampliconclip-tolerance",
+            "2",
             "--outdir",
             str(tmp_path / "results"),
         ]
@@ -1003,6 +1034,11 @@ def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     assert recorded["workflow_kwargs"]["force_all"] is False
     assert recorded["workflow_kwargs"]["quiet"] is True
     assert recorded["workflow_kwargs"]["mode"] == "reads"
+    assert recorded["workflow_kwargs"]["min_depth"] == 10
+    assert recorded["workflow_kwargs"]["consensus_snp_min_af"] == 0.20
+    assert recorded["workflow_kwargs"]["consensus_snp_thresh"] == 0.80
+    assert recorded["workflow_kwargs"]["consensus_indel_thresh"] == 0.70
+    assert recorded["workflow_kwargs"]["ampliconclip_tolerance"] == 2
     assert recorded["vcf_input"] == str(updated_csv)
     assert modes_checked == ["e2e"]
 
@@ -1170,6 +1206,10 @@ def test_bam_runs_snakemake_then_vcf(monkeypatch, tmp_path):
             str(samples_csv),
             "--reference",
             "ref.fasta",
+            "--min-snv-freq",
+            "0.05",
+            "--min-depth",
+            "12",
             "--outdir",
             str(tmp_path / "results"),
         ]
@@ -1180,6 +1220,10 @@ def test_bam_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     assert recorded["force_all"] is False
     assert recorded["quiet"] is True
     assert recorded["mode"] == "bam"
+    assert recorded["min_depth"] == 12
+    assert recorded["consensus_snp_min_af"] == 0.25
+    assert recorded["consensus_snp_thresh"] == 0.75
+    assert recorded["consensus_indel_thresh"] == 0.75
     assert recorded["vcf_input"] == str(updated_csv)
     assert recorded["suppress_logo"] is True
     assert modes_checked == ["bam"]

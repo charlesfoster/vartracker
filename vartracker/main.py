@@ -32,7 +32,7 @@ from .core import (
     ProcessingError,
     FILE_COLUMNS,
 )
-from .vcf_processing import format_vcf, merge_consequences, process_vcf
+from .vcf_processing import annotate_vcf, format_vcf, merge_consequences, process_vcf
 from .analysis import (
     process_joint_variants,
     generate_cumulative_lineplot,
@@ -130,76 +130,114 @@ def _parse_csv_option_list(value: str | None) -> list[str]:
     return [item.strip() for item in str(value).split(",") if item.strip()]
 
 
-def _add_heatmap_option_arguments(group: argparse._ArgumentGroup) -> None:
+def _add_heatmap_option_arguments(
+    group: argparse._ArgumentGroup,
+    *,
+    prefix: str = "heatmap",
+    add_legacy_prefixed_aliases: bool = False,
+) -> None:
+    option_prefix = f"{prefix}-" if prefix else ""
+
+    def option(name: str) -> str:
+        return f"--{option_prefix}{name}"
+
+    def add_legacy(name: str, dest: str, **kwargs) -> None:
+        if add_legacy_prefixed_aliases and not prefix:
+            kwargs.setdefault("default", argparse.SUPPRESS)
+            group.add_argument(
+                f"--heatmap-{name}",
+                dest=dest,
+                help=argparse.SUPPRESS,
+                **kwargs,
+            )
+
     group.add_argument(
-        "--heatmap-aa-exclude",
+        option("aa-exclude"),
         action="store",
         required=False,
         default="",
+        dest="heatmap_aa_exclude",
         help=(
             "Comma-separated `type_of_change` patterns to exclude from heatmaps "
             "(wildcards supported, e.g. synonymous,*frameshift*)"
         ),
     )
+    add_legacy("aa-exclude", "heatmap_aa_exclude", action="store")
     group.add_argument(
-        "--heatmap-aa-include",
+        option("aa-include"),
         action="store",
         required=False,
         default="",
+        dest="heatmap_aa_include",
         help=(
             "Comma-separated `type_of_change` patterns to include in heatmaps "
             "(wildcards supported)"
         ),
     )
+    add_legacy("aa-include", "heatmap_aa_include", action="store")
     group.add_argument(
-        "--heatmap-include-joint",
+        option("include-joint"),
         action="store_true",
         default=False,
+        dest="heatmap_include_joint",
         help="Include joint variants in heatmaps (default: exclude them)",
     )
+    add_legacy("include-joint", "heatmap_include_joint", action="store_true")
     group.add_argument(
-        "--heatmap-only-persistent",
+        option("only-persistent"),
         action="store_true",
         default=False,
+        dest="heatmap_only_persistent",
         help="Only include variants with persistence_status == new_persistent",
     )
+    add_legacy("only-persistent", "heatmap_only_persistent", action="store_true")
     group.add_argument(
-        "--heatmap-only-new",
+        option("only-new"),
         action="store_true",
         default=False,
+        dest="heatmap_only_new",
         help="Only include variants with variant_status == new",
     )
+    add_legacy("only-new", "heatmap_only_new", action="store_true")
     group.add_argument(
-        "--heatmap-gene-include",
+        option("gene-include"),
         action="store",
         required=False,
         default="",
+        dest="heatmap_gene_include",
         help="Comma-separated gene patterns to include in heatmaps",
     )
+    add_legacy("gene-include", "heatmap_gene_include", action="store")
     group.add_argument(
-        "--heatmap-gene-exclude",
+        option("gene-exclude"),
         action="store",
         required=False,
         default="",
+        dest="heatmap_gene_exclude",
         help="Comma-separated gene patterns to exclude from heatmaps",
     )
+    add_legacy("gene-exclude", "heatmap_gene_exclude", action="store")
     group.add_argument(
-        "--heatmap-variant-type",
+        option("variant-type"),
         action="store",
         required=False,
         default="",
+        dest="heatmap_variant_type",
         help="Comma-separated variant type patterns to include (e.g. snp,indel)",
     )
+    add_legacy("variant-type", "heatmap_variant_type", action="store")
     group.add_argument(
-        "--heatmap-qc",
+        option("qc"),
         action="store",
         required=False,
         default="",
+        dest="heatmap_qc",
         help=(
             "Comma-separated all-samples QC patterns to include "
             "(e.g. true,false,pass,fail)"
         ),
     )
+    add_legacy("qc", "heatmap_qc", action="store")
     group.add_argument(
         "--min-prop-passing-qc",
         action="store",
@@ -208,46 +246,58 @@ def _add_heatmap_option_arguments(group: argparse._ArgumentGroup) -> None:
         help="Minimum proportion of samples that must pass per-sample QC (0-1)",
     )
     group.add_argument(
-        "--heatmap-min-persistence",
+        option("min-persistence"),
         action="store",
         type=int,
         default=None,
+        dest="heatmap_min_persistence",
         help="Minimum number of samples in which a variant must be present",
     )
+    add_legacy("min-persistence", "heatmap_min_persistence", action="store", type=int)
     group.add_argument(
-        "--heatmap-min-max-af",
+        option("min-max-af"),
         action="store",
         type=float,
         default=None,
+        dest="heatmap_min_max_af",
         help="Minimum maximum allele frequency across included samples",
     )
+    add_legacy("min-max-af", "heatmap_min_max_af", action="store", type=float)
     group.add_argument(
-        "--heatmap-min-sample-af",
+        option("min-sample-af"),
         action="store",
         type=float,
         default=None,
+        dest="heatmap_min_sample_af",
         help="Minimum allele frequency that must be reached in at least one included sample",
     )
+    add_legacy("min-sample-af", "heatmap_min_sample_af", action="store", type=float)
     group.add_argument(
-        "--heatmap-sample-subset",
+        option("sample-subset"),
         action="store",
         required=False,
         default="",
+        dest="heatmap_sample_subset",
         help="Comma-separated sample name patterns to plot",
     )
+    add_legacy("sample-subset", "heatmap_sample_subset", action="store")
     group.add_argument(
-        "--heatmap-hide-singletons",
+        option("hide-singletons"),
         action="store_true",
         default=False,
+        dest="heatmap_hide_singletons",
         help="Hide variants present in only one included sample",
     )
+    add_legacy("hide-singletons", "heatmap_hide_singletons", action="store_true")
     group.add_argument(
-        "--heatmap-min-depth",
+        option("min-depth"),
         action="store",
         type=int,
         default=None,
+        dest="heatmap_min_depth",
         help="Minimum site depth a variant must reach in at least one included sample",
     )
+    add_legacy("min-depth", "heatmap_min_depth", action="store", type=int)
 
 
 def _collect_heatmap_kwargs(args) -> dict[str, object]:
@@ -622,6 +672,7 @@ def _configure_vcf_parser(
     *,
     include_input_csv: bool,
     input_csv_required: bool = False,
+    include_consensus_options: bool = False,
 ) -> None:
     if include_input_csv:
         if input_csv_required:
@@ -682,6 +733,37 @@ def _configure_vcf_parser(
         default=10,
         help="Minimum depth threshold for variant QC (default: 10)",
     )
+    if include_consensus_options:
+        analysis_group.add_argument(
+            "--consensus-snp-min-af",
+            action="store",
+            required=False,
+            type=float,
+            default=0.25,
+            help=(
+                "Minimum SNP allele frequency required before the site is "
+                "considered for consensus (default: 0.25)"
+            ),
+        )
+        analysis_group.add_argument(
+            "--consensus-snp-thresh",
+            action="store",
+            required=False,
+            type=float,
+            default=0.75,
+            help=(
+                "Minimum SNP allele frequency required for ALT to become the "
+                "consensus base (default: 0.75)"
+            ),
+        )
+        analysis_group.add_argument(
+            "--consensus-indel-thresh",
+            action="store",
+            required=False,
+            type=float,
+            default=0.75,
+            help="Minimum indel allele frequency required for consensus (default: 0.75)",
+        )
     analysis_group.add_argument(
         "--sample-cap",
         action="store",
@@ -873,7 +955,12 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
         default=False,
     )
 
-    _configure_vcf_parser(bam_parser, include_input_csv=True, input_csv_required=False)
+    _configure_vcf_parser(
+        bam_parser,
+        include_input_csv=True,
+        input_csv_required=False,
+        include_consensus_options=True,
+    )
     _move_action_group_after(
         bam_parser, "Snakemake options", "Vartracker Analysis Options"
     )
@@ -1282,41 +1369,26 @@ def _add_plot_heatmap_subparser(subparsers):
         formatter_class=HelpFormatter,
     )
     parser.add_argument("results_csv", help="Path to a vartracker results CSV")
-    parser.add_argument(
-        "--outdir",
+    heatmap_group = parser.add_argument_group("Heatmap options")
+    heatmap_group.add_argument(
+        "--title",
         default=None,
-        help="Output directory for regenerated heatmap files (default: results CSV directory)",
+        help="Plot title for the heatmap (default: Variant allele frequencies)",
     )
-    parser.add_argument(
-        "--name",
-        default=None,
-        help="Optional plot title prefix (default: use the `name` column if present)",
-    )
-    parser.add_argument(
+    heatmap_group.add_argument(
         "--literature-csv",
         default=None,
         help="Optional literature hits CSV to link from the interactive heatmap",
     )
-    parser.add_argument(
-        "-m",
-        "--min-snv-freq",
-        action="store",
-        required=False,
-        type=float,
-        default=0.03,
-        help="Minimum allele frequency of SNV variants to keep (default: 0.03)",
+    heatmap_group.add_argument(
+        "--x-labels",
+        choices=["sample-name", "sample-number"],
+        default="sample-name",
+        help="X-axis labels to use for the heatmap (default: sample-name)",
     )
-    parser.add_argument(
-        "-M",
-        "--min-indel-freq",
-        action="store",
-        required=False,
-        type=float,
-        default=0.1,
-        help="Minimum allele frequency of indel variants to keep (default: 0.1)",
+    _add_heatmap_option_arguments(
+        heatmap_group, prefix="", add_legacy_prefixed_aliases=True
     )
-    heatmap_group = parser.add_argument_group("Heatmap options")
-    _add_heatmap_option_arguments(heatmap_group)
     parser.set_defaults(handler=_run_plot_heatmap_command)
 
 
@@ -1635,9 +1707,6 @@ def _normalise_rulegraph_path(path: str | None) -> str | None:
 
 def _drop_exact_duplicate_result_rows(table: pd.DataFrame) -> pd.DataFrame:
     deduped = table.drop_duplicates().reset_index(drop=True)
-    removed = len(table) - len(deduped)
-    if removed:
-        print(f"Removed {removed} exact duplicate result rows.")
     return deduped
 
 
@@ -1968,6 +2037,12 @@ def _add_e2e_subparser(subparsers):
         help="Optional primer BED file for amplicon clipping in Snakemake",
     )
     snk_group.add_argument(
+        "--ampliconclip-tolerance",
+        type=int,
+        default=1,
+        help="Tolerance for samtools ampliconclip primer matching (default: 1)",
+    )
+    snk_group.add_argument(
         "--snakemake-dryrun",
         action="store_true",
         help="Perform a Snakemake dry-run and skip vartracker analysis",
@@ -1991,7 +2066,11 @@ def _add_e2e_subparser(subparsers):
         default=False,
     )
 
-    _configure_vcf_parser(e2e_parser, include_input_csv=False)
+    _configure_vcf_parser(
+        e2e_parser,
+        include_input_csv=False,
+        include_consensus_options=True,
+    )
     _move_action_group_after(
         e2e_parser, "Snakemake options", "Vartracker Analysis Options"
     )
@@ -2081,6 +2160,11 @@ def _run_e2e_command(args):
             outdir=snakemake_outdir,
             cores=args.cores,
             primer_bed=args.primer_bed,
+            ampliconclip_tolerance=args.ampliconclip_tolerance,
+            min_depth=args.min_depth,
+            consensus_snp_min_af=args.consensus_snp_min_af,
+            consensus_snp_thresh=args.consensus_snp_thresh,
+            consensus_indel_thresh=args.consensus_indel_thresh,
             dryrun=args.snakemake_dryrun,
             force_all=args.redo,
             quiet=not args.verbose,
@@ -2223,6 +2307,10 @@ def _run_bam_command(args):
             outdir=snakemake_outdir,
             cores=args.cores,
             primer_bed=None,
+            min_depth=args.min_depth,
+            consensus_snp_min_af=args.consensus_snp_min_af,
+            consensus_snp_thresh=args.consensus_snp_thresh,
+            consensus_indel_thresh=args.consensus_indel_thresh,
             dryrun=args.snakemake_dryrun,
             force_all=args.redo,
             quiet=not args.verbose,
@@ -2289,11 +2377,7 @@ def _run_plot_heatmap_command(args):
         if not results_csv.exists():
             raise InputValidationError(f"Results CSV not found: {results_csv}")
 
-        outdir = (
-            Path(args.outdir).expanduser().resolve()
-            if args.outdir
-            else results_csv.parent
-        )
+        outdir = results_csv.parent
         outdir.mkdir(parents=True, exist_ok=True)
 
         table = pd.read_csv(results_csv, keep_default_na=False)
@@ -2313,23 +2397,33 @@ def _run_plot_heatmap_command(args):
             raise InputValidationError(
                 "Could not determine sample names from the results CSV"
             )
-
-        project_name = args.name
-        if project_name is None and "name" in table.columns:
-            names = [
-                str(value).strip()
-                for value in table["name"].unique()
-                if str(value).strip()
-            ]
-            if len(names) == 1:
-                project_name = names[0]
-        if project_name is None:
-            project_name = ""
+        sample_numbers = [
+            token.strip()
+            for token in str(table.iloc[0].get("sample_number", "")).split(" / ")
+            if token.strip()
+        ]
+        if args.x_labels == "sample-number":
+            if not sample_numbers:
+                raise InputValidationError(
+                    "Results CSV must contain a 'sample_number' column to use "
+                    "--x-labels sample-number"
+                )
+            if len(sample_numbers) != len(sample_names):
+                raise InputValidationError(
+                    "Results CSV has mismatched 'samples' and 'sample_number' columns"
+                )
+            x_tick_labels = sample_numbers
+        else:
+            x_tick_labels = sample_names
 
         literature_df = None
         literature_path = None
         if args.literature_csv:
             literature_path = str(Path(args.literature_csv).expanduser().resolve())
+            if not Path(literature_path).exists():
+                raise InputValidationError(
+                    f"Literature CSV not found: {literature_path}"
+                )
             try:
                 literature_df = pd.read_csv(literature_path)
             except Exception as exc:
@@ -2341,14 +2435,16 @@ def _run_plot_heatmap_command(args):
         generate_variant_heatmap(
             table,
             sample_names,
-            sample_names,
+            sample_numbers or sample_names,
             str(outdir),
-            project_name,
-            args.min_snv_freq,
-            args.min_indel_freq,
+            "",
+            0.03,
+            0.1,
+            cli_command=cli_command,
+            x_tick_labels=x_tick_labels,
+            plot_title=args.title,
             literature_hits=literature_df,
             literature_table_path=literature_path,
-            cli_command=cli_command,
             **_collect_heatmap_kwargs(args),
         )
         print(f"\nFinished: find results in {outdir}\n")
@@ -2490,9 +2586,9 @@ def _process_files(
         table = pd.read_csv(precomputed_path, keep_default_na=False)
     else:
         # Format VCF files
-        csq_paths = []
+        formatted_vcfs = []
         for vcf, sample in zip(vcfs, sample_names):
-            _, csq_path = format_vcf(
+            formatted_vcf, _ = format_vcf(
                 vcf,
                 sample,
                 tempdir,
@@ -2503,10 +2599,10 @@ def _process_files(
                 args.debug,
                 args.allele_frequency_tag,
             )
-            csq_paths.append(csq_path)
+            formatted_vcfs.append(formatted_vcf)
 
         # Prepare file lists for merging
-        new_vcfs = csq_paths
+        new_vcfs = formatted_vcfs
 
         # Write VCF list file
         with open(os.path.join(tempdir, "vcf_list.txt"), "w") as f:
@@ -2519,10 +2615,18 @@ def _process_files(
             for sample_name in sample_names:
                 f.write(f"{sample_name}\n")
 
-        # Merge VCF files
+        # Merge VCF files and annotate once across the merged longitudinal set.
         print("Annotating results...")
+        merged_vcf = os.path.join(tempdir, "vcf_merged.vcf")
+        merge_consequences(tempdir, merged_vcf, sample_names_file, args.debug)
         csq_file = os.path.join(tempdir, "vcf_annotated.vcf")
-        merge_consequences(tempdir, csq_file, sample_names_file, args.debug)
+        annotate_vcf(
+            merged_vcf,
+            csq_file,
+            args.reference,
+            args.gff3,
+            args.debug,
+        )
 
         # Process VCF and extract variants
         print("Summarising results...")

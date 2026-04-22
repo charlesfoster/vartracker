@@ -356,6 +356,148 @@ def test_process_joint_variants_only_adds_single_joint_prefix(tmp_path):
     assert result.loc[1, "type_of_change"] == "joint_frameshift"
 
 
+def test_process_joint_variants_matches_main_row_by_presence_pattern(tmp_path):
+    csv_path = tmp_path / "results.csv"
+    pd.DataFrame(
+        [
+            {
+                "start": 100,
+                "gene": "S",
+                "amino_acid_consequence": "K2A",
+                "nsp_aa_change": "",
+                "bcsq_nt_notation": "4A>G+5A>C",
+                "bcsq_aa_notation": "2K>2A",
+                "aa1_total_properties": "",
+                "aa2_total_properties": "",
+                "aa1_unique_properties": "",
+                "aa2_unique_properties": "",
+                "aa1_weight": "",
+                "aa2_weight": "",
+                "weight_difference": "",
+                "type_of_change": "missense",
+                "presence_absence": "Y / N",
+            },
+            {
+                "start": 100,
+                "gene": "S",
+                "amino_acid_consequence": "K2V",
+                "nsp_aa_change": "",
+                "bcsq_nt_notation": "4A>T+5A>G",
+                "bcsq_aa_notation": "2K>2V",
+                "aa1_total_properties": "",
+                "aa2_total_properties": "",
+                "aa1_unique_properties": "",
+                "aa2_unique_properties": "",
+                "aa1_weight": "",
+                "aa2_weight": "",
+                "weight_difference": "",
+                "type_of_change": "missense",
+                "presence_absence": "N / Y",
+            },
+            {
+                "start": 101,
+                "gene": "",
+                "amino_acid_consequence": "",
+                "nsp_aa_change": "",
+                "bcsq_nt_notation": "",
+                "bcsq_aa_notation": "@100",
+                "aa1_total_properties": "",
+                "aa2_total_properties": "",
+                "aa1_unique_properties": "",
+                "aa2_unique_properties": "",
+                "aa1_weight": "",
+                "aa2_weight": "",
+                "weight_difference": "",
+                "type_of_change": "@100",
+                "presence_absence": "N / Y",
+            },
+        ]
+    ).to_csv(csv_path, index=False)
+
+    result = process_joint_variants(str(csv_path))
+
+    assert result.loc[2, "amino_acid_consequence"] == "K2V"
+    assert result.loc[2, "type_of_change"] == "joint_missense"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "process_joint_variants currently resolves tied main-row candidates by row "
+        "order, which is unsafe for overlapping genes"
+    ),
+)
+def test_process_joint_variants_is_order_invariant_for_overlapping_gene_rows(tmp_path):
+    shared_rows = [
+        {
+            "start": 25470,
+            "gene": "ORF3a",
+            "amino_acid_consequence": "ORF3a:A10V",
+            "nsp_aa_change": "",
+            "bcsq_nt_notation": "c.30C>T",
+            "bcsq_aa_notation": "p.A10V",
+            "aa1_total_properties": "",
+            "aa2_total_properties": "",
+            "aa1_unique_properties": "",
+            "aa2_unique_properties": "",
+            "aa1_weight": "",
+            "aa2_weight": "",
+            "weight_difference": "",
+            "type_of_change": "missense",
+            "presence_absence": "Y / N / Y",
+        },
+        {
+            "start": 25470,
+            "gene": "ORF3c",
+            "amino_acid_consequence": "ORF3c:M5I",
+            "nsp_aa_change": "",
+            "bcsq_nt_notation": "c.15G>A",
+            "bcsq_aa_notation": "p.M5I",
+            "aa1_total_properties": "",
+            "aa2_total_properties": "",
+            "aa1_unique_properties": "",
+            "aa2_unique_properties": "",
+            "aa1_weight": "",
+            "aa2_weight": "",
+            "weight_difference": "",
+            "type_of_change": "missense",
+            "presence_absence": "Y / N / Y",
+        },
+        {
+            "start": 25471,
+            "gene": "",
+            "amino_acid_consequence": "",
+            "nsp_aa_change": "",
+            "bcsq_nt_notation": "",
+            "bcsq_aa_notation": "@25470",
+            "aa1_total_properties": "",
+            "aa2_total_properties": "",
+            "aa1_unique_properties": "",
+            "aa2_unique_properties": "",
+            "aa1_weight": "",
+            "aa2_weight": "",
+            "weight_difference": "",
+            "type_of_change": "@25470",
+            "presence_absence": "Y / N / Y",
+        },
+    ]
+
+    first_csv = tmp_path / "overlap_first.csv"
+    second_csv = tmp_path / "overlap_second.csv"
+    pd.DataFrame(shared_rows).to_csv(first_csv, index=False)
+    pd.DataFrame([shared_rows[1], shared_rows[0], shared_rows[2]]).to_csv(
+        second_csv, index=False
+    )
+
+    first_result = process_joint_variants(str(first_csv))
+    second_result = process_joint_variants(str(second_csv))
+
+    first_joint = first_result.loc[2, ["gene", "amino_acid_consequence"]].to_dict()
+    second_joint = second_result.loc[2, ["gene", "amino_acid_consequence"]].to_dict()
+
+    assert first_joint == second_joint
+
+
 def test_generate_variant_heatmap_creates_interactive_html(tmp_path, monkeypatch):
     mpl_dir = tmp_path / "mpl"
     mpl_dir.mkdir()

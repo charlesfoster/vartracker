@@ -24,12 +24,60 @@ def _normalise_path(value: str | Path) -> str:
     return str(Path(value).expanduser().resolve())
 
 
+def _first_fasta_record_id(fasta_path: str | Path) -> str | None:
+    with Path(fasta_path).open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith(">"):
+                return line[1:].split()[0].strip()
+    return None
+
+
+def _primer_bed_contigs(primer_bed_path: str | Path) -> set[str]:
+    contigs = set()
+    with Path(primer_bed_path).open("r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("track ") or line.startswith("browser "):
+                continue
+            contigs.add(line.split()[0])
+    return contigs
+
+
+def _validate_primer_bed_reference(
+    primer_bed_path: str | Path, reference_path: str | Path
+) -> None:
+    reference_id = _first_fasta_record_id(reference_path)
+    if not reference_id:
+        raise ValueError(
+            f"Unable to determine reference FASTA ID from: {reference_path}"
+        )
+
+    bed_contigs = _primer_bed_contigs(primer_bed_path)
+    if not bed_contigs:
+        raise ValueError(f"Primer BED file contains no intervals: {primer_bed_path}")
+
+    mismatched = sorted(contig for contig in bed_contigs if contig != reference_id)
+    if mismatched:
+        joined = ", ".join(mismatched)
+        raise ValueError(
+            f"Primer BED contig(s) {joined!r} do not match reference FASTA ID "
+            f"{reference_id!r}"
+        )
+
+
 def run_workflow(
     samples_csv: str | Path,
     reference: str | Path,
     outdir: str | Path = "results",
     cores: int = 8,
     primer_bed: Optional[str | Path] = None,
+    ampliconclip_tolerance: int = 1,
+    min_depth: int = 10,
+    consensus_snp_min_af: float = 0.25,
+    consensus_snp_thresh: float = 0.75,
+    consensus_indel_thresh: float = 0.75,
     dryrun: bool = False,
     force_all: bool = False,
     quiet: bool = True,
@@ -57,6 +105,8 @@ def run_workflow(
         raise FileNotFoundError(f"Reference genome not found: {reference}")
     if primer_bed_path and not Path(primer_bed_path).exists():
         raise FileNotFoundError(f"Primer BED file not found: {primer_bed_path}")
+    if primer_bed_path:
+        _validate_primer_bed_reference(primer_bed_path, reference)
 
     Path(outdir).mkdir(parents=True, exist_ok=True)
 
@@ -66,6 +116,11 @@ def run_workflow(
         "reference": reference,
         "outdir": outdir,
         "mode": mode,
+        "ampliconclip_tolerance": ampliconclip_tolerance,
+        "min_depth": min_depth,
+        "consensus_snp_min_af": consensus_snp_min_af,
+        "consensus_snp_thresh": consensus_snp_thresh,
+        "consensus_indel_thresh": consensus_indel_thresh,
     }
     if primer_bed_path:
         config_dict["primer_bed"] = primer_bed_path
