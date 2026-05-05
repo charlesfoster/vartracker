@@ -63,7 +63,7 @@ dev = [
     "pytest-cov",
     "black",
     "flake8",
-    "mypy",
+    "mypy>=1.19,<1.20",
     "pre-commit>=3.6",
 ]
 
