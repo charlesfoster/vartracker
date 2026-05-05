@@ -1,6 +1,6 @@
 # Output schema
 
-Schema version: `1.0`
+Schema version: `1.1`
 
 Generated from `vartracker.schemas.RESULTS_SCHEMA`.
 
@@ -28,7 +28,8 @@ Columns that encode per-sample values are slash-separated and ordered by the inp
 | presence_absence | string (slash-separated) | Per-sample presence (Y) or absence (N), ordered by input. |  | Y/N |
 | first_appearance | string | Sample name where the variant first appears. |  |  |
 | last_appearance | string | Sample name where the variant last appears. |  |  |
-| overall_variant_qc | string | Aggregated QC status across samples. |  | PASS, FAIL |
+| all_samples_pass_qc | boolean | True if every sample passes per-sample variant QC. |  | true, false |
+| proportion_samples_passing_qc | number | Proportion of samples passing per-sample variant QC. | fraction | 0-1 |
 | per_sample_variant_qc | string (slash-separated) | Per-sample QC flags (P/F) ordered by input. |  | P, F |
 | aa1_total_properties | string | Physicochemical properties for the reference amino acid. |  | semicolon-separated properties |
 | aa2_total_properties | string | Physicochemical properties for the alternate amino acid. |  | semicolon-separated properties |
@@ -42,4 +43,5 @@ Columns that encode per-sample values are slash-separated and ordered by the inp
 | variant_site_depth | string (slash-separated) | Total read depth at the variant site per sample. | reads |  |
 | variant_window_depth | string (slash-separated) | Mean read depth in the variant window per sample. | reads |  |
 | samples | string (slash-separated) | Sample names corresponding to per-sample fields. |  |  |
+| sample_number | string (slash-separated) | Sample ordering values corresponding to per-sample fields. |  | integer-like sample numbers |
 | total_genome_coverage | string (slash-separated) | Total genome coverage (bases covered) per sample. | bases |  |

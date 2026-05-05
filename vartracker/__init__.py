@@ -12,6 +12,11 @@ from ._version import __version__
 __author__ = "Dr Charles Foster"
 __email__ = "github.com/charlesfoster"
 
-from .main import main  # noqa: F401
+
+def main():
+    from .main import main as _main
+
+    return _main()
+
 
 __all__ = ["__version__", "main"]

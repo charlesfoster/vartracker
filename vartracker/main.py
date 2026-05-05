@@ -16,6 +16,7 @@ import tempfile
 from contextlib import ExitStack
 from importlib import resources
 from pathlib import Path
+from typing import Sequence
 
 import pandas as pd
 
@@ -31,7 +32,7 @@ from .core import (
     ProcessingError,
     FILE_COLUMNS,
 )
-from .vcf_processing import format_vcf, merge_consequences, process_vcf
+from .vcf_processing import annotate_vcf, format_vcf, merge_consequences, process_vcf
 from .analysis import (
     process_joint_variants,
     generate_cumulative_lineplot,
@@ -39,6 +40,26 @@ from .analysis import (
     plot_gene_table,
     generate_variant_heatmap,
     search_literature,
+)
+from .plotting import (
+    DEFAULT_LIFESPAN_TOP_N,
+    DEFAULT_TRAJECTORY_TOP_N,
+    apply_shared_plot_filters,
+    auto_select_variants,
+    load_reference_feature_metadata,
+    collect_explicit_variants,
+    get_threshold_crossing_variants,
+    load_results_table,
+    parse_thresholds,
+    plot_variant_genome,
+    plot_variant_lifespan,
+    plot_variant_trajectory,
+    plot_variant_turnover,
+    prepare_plot_inputs,
+    _project_name_from_results,
+    resolve_focus_regions,
+    resolve_plot_output_path,
+    write_reference_feature_metadata,
 )
 from ._version import __version__
 from .provenance import (
@@ -58,6 +79,7 @@ from .annotation_processing import (
     validate_reference_and_annotation,
 )
 from .reference_prepare import parse_accessions, prepare_reference_bundle
+from .lofreq_primer_rescue import PrimerRescueThresholds
 
 _RED = "\033[91m"
 _YELLOW = "\033[93m"
@@ -101,6 +123,367 @@ LITERATURE_SCHEMA: list[dict[str, str]] = [
         "values": "e.g. 10.1038/s41586-020-2012-7; 10.1016/S0140-6736(20)30154-9",
     },
 ]
+
+
+def _parse_csv_option_list(value: str | None) -> list[str]:
+    if value is None:
+        return []
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def _add_heatmap_option_arguments(
+    group: argparse._ArgumentGroup,
+    *,
+    prefix: str = "heatmap",
+    add_legacy_prefixed_aliases: bool = False,
+) -> None:
+    option_prefix = f"{prefix}-" if prefix else ""
+
+    def option(name: str) -> str:
+        return f"--{option_prefix}{name}"
+
+    def add_legacy(name: str, dest: str, **kwargs) -> None:
+        if add_legacy_prefixed_aliases and not prefix:
+            kwargs.setdefault("default", argparse.SUPPRESS)
+            group.add_argument(
+                f"--heatmap-{name}",
+                dest=dest,
+                help=argparse.SUPPRESS,
+                **kwargs,
+            )
+
+    group.add_argument(
+        option("aa-exclude"),
+        action="store",
+        required=False,
+        default="",
+        dest="heatmap_aa_exclude",
+        help=(
+            "Comma-separated `type_of_change` patterns to exclude from heatmaps "
+            "(wildcards supported, e.g. synonymous,*frameshift*)"
+        ),
+    )
+    add_legacy("aa-exclude", "heatmap_aa_exclude", action="store")
+    group.add_argument(
+        option("aa-include"),
+        action="store",
+        required=False,
+        default="",
+        dest="heatmap_aa_include",
+        help=(
+            "Comma-separated `type_of_change` patterns to include in heatmaps "
+            "(wildcards supported)"
+        ),
+    )
+    add_legacy("aa-include", "heatmap_aa_include", action="store")
+    group.add_argument(
+        option("include-joint"),
+        action="store_true",
+        default=False,
+        dest="heatmap_include_joint",
+        help="Include joint variants in heatmaps (default: exclude them)",
+    )
+    add_legacy("include-joint", "heatmap_include_joint", action="store_true")
+    group.add_argument(
+        option("only-persistent"),
+        action="store_true",
+        default=False,
+        dest="heatmap_only_persistent",
+        help="Only include variants with persistence_status == new_persistent",
+    )
+    add_legacy("only-persistent", "heatmap_only_persistent", action="store_true")
+    group.add_argument(
+        option("only-new"),
+        action="store_true",
+        default=False,
+        dest="heatmap_only_new",
+        help="Only include variants with variant_status == new",
+    )
+    add_legacy("only-new", "heatmap_only_new", action="store_true")
+    group.add_argument(
+        option("gene-include"),
+        action="store",
+        required=False,
+        default="",
+        dest="heatmap_gene_include",
+        help="Comma-separated gene patterns to include in heatmaps",
+    )
+    add_legacy("gene-include", "heatmap_gene_include", action="store")
+    group.add_argument(
+        option("gene-exclude"),
+        action="store",
+        required=False,
+        default="",
+        dest="heatmap_gene_exclude",
+        help="Comma-separated gene patterns to exclude from heatmaps",
+    )
+    add_legacy("gene-exclude", "heatmap_gene_exclude", action="store")
+    group.add_argument(
+        option("variant-type"),
+        action="store",
+        required=False,
+        default="",
+        dest="heatmap_variant_type",
+        help="Comma-separated variant type patterns to include (e.g. snp,indel)",
+    )
+    add_legacy("variant-type", "heatmap_variant_type", action="store")
+    group.add_argument(
+        option("qc"),
+        action="store",
+        required=False,
+        default="",
+        dest="heatmap_qc",
+        help=(
+            "Comma-separated all-samples QC patterns to include "
+            "(e.g. true,false,pass,fail)"
+        ),
+    )
+    add_legacy("qc", "heatmap_qc", action="store")
+    group.add_argument(
+        "--min-prop-passing-qc",
+        action="store",
+        type=float,
+        default=None,
+        help="Minimum proportion of samples that must pass per-sample QC (0-1)",
+    )
+    group.add_argument(
+        option("min-persistence"),
+        action="store",
+        type=int,
+        default=None,
+        dest="heatmap_min_persistence",
+        help="Minimum number of samples in which a variant must be present",
+    )
+    add_legacy("min-persistence", "heatmap_min_persistence", action="store", type=int)
+    group.add_argument(
+        option("min-max-af"),
+        action="store",
+        type=float,
+        default=None,
+        dest="heatmap_min_max_af",
+        help="Minimum maximum allele frequency across included samples",
+    )
+    add_legacy("min-max-af", "heatmap_min_max_af", action="store", type=float)
+    group.add_argument(
+        option("min-sample-af"),
+        action="store",
+        type=float,
+        default=None,
+        dest="heatmap_min_sample_af",
+        help="Minimum allele frequency that must be reached in at least one included sample",
+    )
+    add_legacy("min-sample-af", "heatmap_min_sample_af", action="store", type=float)
+    group.add_argument(
+        option("sample-subset"),
+        action="store",
+        required=False,
+        default="",
+        dest="heatmap_sample_subset",
+        help="Comma-separated sample name patterns to plot",
+    )
+    add_legacy("sample-subset", "heatmap_sample_subset", action="store")
+    group.add_argument(
+        option("hide-singletons"),
+        action="store_true",
+        default=False,
+        dest="heatmap_hide_singletons",
+        help="Hide variants present in only one included sample",
+    )
+    add_legacy("hide-singletons", "heatmap_hide_singletons", action="store_true")
+    group.add_argument(
+        option("min-depth"),
+        action="store",
+        type=int,
+        default=None,
+        dest="heatmap_min_depth",
+        help="Minimum site depth a variant must reach in at least one included sample",
+    )
+    add_legacy("min-depth", "heatmap_min_depth", action="store", type=int)
+
+
+def _collect_heatmap_kwargs(args) -> dict[str, object]:
+    return {
+        "excluded_consequence_types": _parse_csv_option_list(
+            getattr(args, "heatmap_aa_exclude", "")
+        ),
+        "included_consequence_types": _parse_csv_option_list(
+            getattr(args, "heatmap_aa_include", "")
+        ),
+        "include_joint": getattr(args, "heatmap_include_joint", False),
+        "only_persistent": getattr(args, "heatmap_only_persistent", False),
+        "only_new": getattr(args, "heatmap_only_new", False),
+        "gene_include": _parse_csv_option_list(
+            getattr(args, "heatmap_gene_include", "")
+        ),
+        "gene_exclude": _parse_csv_option_list(
+            getattr(args, "heatmap_gene_exclude", "")
+        ),
+        "variant_type_include": _parse_csv_option_list(
+            getattr(args, "heatmap_variant_type", "")
+        ),
+        "qc_include": _parse_csv_option_list(getattr(args, "heatmap_qc", "")),
+        "min_prop_passing_qc": getattr(args, "min_prop_passing_qc", None),
+        "min_persistence": getattr(args, "heatmap_min_persistence", None),
+        "min_max_af": getattr(args, "heatmap_min_max_af", None),
+        "min_sample_af": getattr(args, "heatmap_min_sample_af", None),
+        "sample_subset": _parse_csv_option_list(
+            getattr(args, "heatmap_sample_subset", "")
+        ),
+        "hide_singletons": getattr(args, "heatmap_hide_singletons", False),
+        "min_depth": getattr(args, "heatmap_min_depth", None),
+    }
+
+
+def _add_shared_plot_filter_arguments(group: argparse._ArgumentGroup) -> None:
+    group.add_argument("--gene", default=None, help="Restrict to a single gene")
+    group.add_argument(
+        "--effect",
+        default="",
+        help="Comma-separated effect classes to include (e.g. missense,synonymous)",
+    )
+    group.add_argument(
+        "--min-af",
+        type=float,
+        default=None,
+        help="Minimum max allele frequency across included samples",
+    )
+    group.add_argument(
+        "--max-af",
+        type=float,
+        default=None,
+        help="Maximum max allele frequency across included samples",
+    )
+    group.add_argument(
+        "--variants",
+        default="",
+        help="Comma-separated variant identifiers to plot, in order",
+    )
+    group.add_argument(
+        "--variant-file",
+        default=None,
+        help="Path to a file with one variant identifier per line",
+    )
+    group.add_argument(
+        "--sample-min",
+        type=int,
+        default=None,
+        help="Minimum sample_number to include",
+    )
+    group.add_argument(
+        "--sample-max",
+        type=int,
+        default=None,
+        help="Maximum sample_number to include",
+    )
+    group.add_argument(
+        "--include-synonymous",
+        action="store_true",
+        default=True,
+        help="Preserve synonymous variants in standalone plot filtering",
+    )
+    group.add_argument(
+        "--persistent-only",
+        action="store_true",
+        default=False,
+        help="Only include variants with persistence_status == new_persistent",
+    )
+    group.add_argument(
+        "--new-only",
+        action="store_true",
+        default=False,
+        help="Only include variants with variant_status == new",
+    )
+
+
+def _add_plot_output_arguments(parser: argparse.ArgumentParser) -> None:
+    output_group = parser.add_argument_group("Output")
+    output_group.add_argument(
+        "--out", default=None, help="Write the plot to this exact path"
+    )
+    output_group.add_argument(
+        "--outdir",
+        default=None,
+        help="Output directory for plot files (default: beside results.csv)",
+    )
+    output_group.add_argument(
+        "--format",
+        choices=["pdf", "png", "svg"],
+        default="pdf",
+        help="Output format when using --outdir or default naming (default: pdf)",
+    )
+    output_group.add_argument(
+        "--dpi",
+        type=int,
+        default=300,
+        help="Output DPI (default: 300)",
+    )
+
+
+def _collect_shared_plot_kwargs(args) -> dict[str, object]:
+    return {
+        "gene": getattr(args, "gene", None),
+        "effects": _parse_csv_option_list(getattr(args, "effect", "")),
+        "min_af": getattr(args, "min_af", None),
+        "max_af": getattr(args, "max_af", None),
+        "variants": collect_explicit_variants(
+            getattr(args, "variants", ""), getattr(args, "variant_file", None)
+        ),
+        "sample_min": getattr(args, "sample_min", None),
+        "sample_max": getattr(args, "sample_max", None),
+        "include_synonymous": getattr(args, "include_synonymous", True),
+        "persistent_only": getattr(args, "persistent_only", False),
+        "new_only": getattr(args, "new_only", False),
+    }
+
+
+def _resolve_plot_variants(
+    summary: pd.DataFrame,
+    *,
+    explicit_variants: Sequence[str],
+    top_n: int,
+    prefer_crossing: bool = False,
+    thresholds: Sequence[float] | None = None,
+) -> list[str]:
+    def _label_prefix(value: object) -> str:
+        return str(value).split(" (", 1)[0].strip()
+
+    if explicit_variants:
+        selected = []
+        seen = set()
+        for requested in explicit_variants:
+            match = summary[
+                summary.apply(
+                    lambda row: requested
+                    in {
+                        row["variant_id"],
+                        row["variant_label"],
+                        _label_prefix(row["variant_label"]),
+                        row["variant_name"],
+                    },
+                    axis=1,
+                )
+            ]
+            if match.empty:
+                continue
+            variant_id = str(match.iloc[0]["variant_id"])
+            if variant_id not in seen:
+                selected.append(variant_id)
+                seen.add(variant_id)
+        if not selected:
+            raise ProcessingError(
+                "None of the requested variants were found in the filtered results"
+            )
+        return selected
+
+    selected = auto_select_variants(
+        summary,
+        top_n=top_n,
+        prefer_crossing=prefer_crossing,
+        thresholds=thresholds,
+    )
+    if not selected:
+        raise ProcessingError("No variants were available for plotting")
+    return selected
 
 
 def _print_dependency_error(error: DependencyError) -> None:
@@ -290,6 +673,7 @@ def _configure_vcf_parser(
     *,
     include_input_csv: bool,
     input_csv_required: bool = False,
+    include_consensus_options: bool = False,
 ) -> None:
     if include_input_csv:
         if input_csv_required:
@@ -297,9 +681,18 @@ def _configure_vcf_parser(
         else:
             parser.add_argument("input_csv", nargs="?", help="Input CSV file")
 
-    vt_group = parser.add_argument_group("Vartracker options")
+    analysis_group = parser.add_argument_group("Vartracker Analysis Options")
+    output_group = parser.add_argument_group("Vartracker Output Options")
 
-    vt_group.add_argument(
+    analysis_group.add_argument(
+        "-r",
+        "--reference",
+        action="store",
+        required=False,
+        default=None,
+        help="Reference genome (default: uses packaged SARS-CoV-2 reference)",
+    )
+    analysis_group.add_argument(
         "-g",
         "--gff3",
         action="store",
@@ -307,7 +700,14 @@ def _configure_vcf_parser(
         default=None,
         help="GFF3 annotations to use (default: packaged SARS-CoV-2 annotations)",
     )
-    vt_group.add_argument(
+    analysis_group.add_argument(
+        "--allele-frequency-tag",
+        action="store",
+        required=False,
+        default="AF",
+        help="INFO tag name for allele frequency (default: AF)",
+    )
+    analysis_group.add_argument(
         "-m",
         "--min-snv-freq",
         action="store",
@@ -316,7 +716,7 @@ def _configure_vcf_parser(
         default=0.03,
         help="Minimum allele frequency of SNV variants to keep (default: 0.03)",
     )
-    vt_group.add_argument(
+    analysis_group.add_argument(
         "-M",
         "--min-indel-freq",
         action="store",
@@ -325,7 +725,18 @@ def _configure_vcf_parser(
         default=0.1,
         help="Minimum allele frequency of indel variants to keep (default: 0.1)",
     )
-    vt_group.add_argument(
+    analysis_group.add_argument(
+        "--multiallelic-overflow",
+        action="store",
+        required=False,
+        choices=("error", "drop-lowest-af", "skip-site"),
+        default="error",
+        help=(
+            "How to handle sites where more than two ALT alleles remain present in "
+            "one sample after filtering (default: error)"
+        ),
+    )
+    analysis_group.add_argument(
         "-d",
         "--min-depth",
         action="store",
@@ -334,7 +745,65 @@ def _configure_vcf_parser(
         default=10,
         help="Minimum depth threshold for variant QC (default: 10)",
     )
-    vt_group.add_argument(
+    if include_consensus_options:
+        analysis_group.add_argument(
+            "--consensus-snp-min-af",
+            action="store",
+            required=False,
+            type=float,
+            default=0.25,
+            help=(
+                "Minimum SNP allele frequency required before the site is "
+                "considered for consensus (default: 0.25)"
+            ),
+        )
+        analysis_group.add_argument(
+            "--consensus-snp-thresh",
+            action="store",
+            required=False,
+            type=float,
+            default=0.75,
+            help=(
+                "Minimum SNP allele frequency required for ALT to become the "
+                "consensus base (default: 0.75)"
+            ),
+        )
+        analysis_group.add_argument(
+            "--consensus-indel-thresh",
+            action="store",
+            required=False,
+            type=float,
+            default=0.75,
+            help="Minimum indel allele frequency required for consensus (default: 0.75)",
+        )
+    analysis_group.add_argument(
+        "--sample-cap",
+        action="store",
+        type=int,
+        help="Only analyse samples with sample_number less than or equal to this value",
+        default=None,
+    )
+    analysis_group.add_argument(
+        "--literature-csv",
+        action="store",
+        required=False,
+        default=None,
+        help="Path to a literature CSV file (see README for file structure)",
+    )
+    analysis_group.add_argument(
+        "--search-pokay",
+        action="store_true",
+        help='Automatically download and search against the "pokay" SARS-CoV-2 literature database.',
+        default=False,
+    )
+    analysis_group.add_argument(
+        "--test",
+        action="store_true",
+        help="Run vartracker against the bundled demonstration dataset",
+        default=False,
+    )
+
+    output_group.add_argument(
         "-n",
         "--name",
         action="store",
@@ -342,7 +811,7 @@ def _configure_vcf_parser(
         default=None,
         help="Optional: add a column to results with the name specified here",
     )
-    vt_group.add_argument(
+    output_group.add_argument(
         "-o",
         "--outdir",
         action="store",
@@ -350,13 +819,13 @@ def _configure_vcf_parser(
         default=".",
         help="Output directory for vartracker results (default: current directory)",
     )
-    vt_group.add_argument(
+    output_group.add_argument(
         "--manifest-level",
         choices=["light", "deep"],
         default="light",
         help="Manifest detail level for run metadata (default: light)",
     )
-    vt_group.add_argument(
+    output_group.add_argument(
         "-f",
         "--filename",
         action="store",
@@ -364,59 +833,84 @@ def _configure_vcf_parser(
         default="results.csv",
         help="Output file name (default: results.csv)",
     )
-    vt_group.add_argument(
-        "-r",
-        "--reference",
-        action="store",
-        required=False,
-        default=None,
-        help="Reference genome (default: uses packaged SARS-CoV-2 reference)",
-    )
-    vt_group.add_argument(
-        "--passage-cap",
-        action="store",
-        type=int,
-        help="Cap the number of passages at this number",
-        default=None,
-    )
-    vt_group.add_argument(
+
+    output_group.add_argument(
         "--debug",
         action="store_true",
         help="Print commands being run for debugging",
         default=False,
     )
-    vt_group.add_argument(
+    output_group.add_argument(
         "--keep-temp",
         action="store_true",
         help="Keep temporary files for debugging",
         default=False,
     )
-    vt_group.add_argument(
-        "--literature-csv",
-        action="store",
-        required=False,
-        default=None,
-        help="Path to a literature CSV file (see README for file structure)",
+
+
+def _add_lofreq_primer_rescue_arguments(group: argparse._ArgumentGroup) -> None:
+    group.add_argument(
+        "--lofreq-primer-rescue",
+        choices=("auto", "on", "off"),
+        default="auto",
+        help=(
+            "Primer-overlap rescue mode for LoFreq calls. 'auto' runs rescue when "
+            "--primer-bed is supplied; 'off' disables it (default: auto)"
+        ),
     )
-    vt_group.add_argument(
-        "--search-pokay",
-        action="store_true",
-        help='Automatically download and search against the "pokay" SARS-CoV-2 literature database.',
-        default=False,
+    group.add_argument(
+        "--lofreq-rescue-min-af",
+        type=float,
+        default=PrimerRescueThresholds.min_af,
+        help="Minimum INFO/AF for primer rescue candidates only (default: 0.95)",
     )
-    vt_group.add_argument(
-        "--test",
-        action="store_true",
-        help="Run vartracker against the bundled demonstration dataset",
-        default=False,
+    group.add_argument(
+        "--lofreq-rescue-min-dp",
+        type=int,
+        default=PrimerRescueThresholds.min_dp,
+        help="Minimum INFO/DP for primer rescue candidates only (default: 100)",
     )
-    vt_group.add_argument(
-        "--allele-frequency-tag",
-        action="store",
-        required=False,
-        default="AF",
-        help="INFO tag name for allele frequency (default: AF)",
+    group.add_argument(
+        "--lofreq-rescue-min-alt-count",
+        type=int,
+        default=PrimerRescueThresholds.min_alt_count,
+        help=(
+            "Minimum DP4 alternate count for primer rescue candidates only "
+            "(default: 95)"
+        ),
     )
+    group.add_argument(
+        "--lofreq-rescue-min-qual",
+        type=float,
+        default=PrimerRescueThresholds.min_qual,
+        help="Minimum QUAL for primer rescue candidates only (default: 100)",
+    )
+    group.add_argument(
+        "--lofreq-rescue-max-ref-count",
+        type=int,
+        default=PrimerRescueThresholds.max_ref_count,
+        help="Maximum DP4 reference count for primer rescue candidates only (default: 20)",
+    )
+
+
+def _move_action_group_after(
+    parser: argparse.ArgumentParser, group_title: str, anchor_title: str
+) -> None:
+    groups = parser._action_groups
+    try:
+        group_index = next(
+            i for i, grp in enumerate(groups) if grp.title == group_title
+        )
+        anchor_index = next(
+            i for i, grp in enumerate(groups) if grp.title == anchor_title
+        )
+    except StopIteration:
+        return
+
+    group = groups.pop(group_index)
+    if group_index < anchor_index:
+        anchor_index -= 1
+    groups.insert(anchor_index + 1, group)
 
 
 def _add_vcf_subparser(subparsers):
@@ -482,8 +976,6 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
 """,
     )
 
-    _configure_vcf_parser(bam_parser, include_input_csv=True, input_csv_required=False)
-
     snk_group = bam_parser.add_argument_group("Snakemake options")
     snk_group.add_argument(
         "--snakemake-outdir",
@@ -496,6 +988,14 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
         default=8,
         help="Number of cores for Snakemake execution (default: 8)",
     )
+    snk_group.add_argument(
+        "--primer-bed",
+        help=(
+            "Optional primer BED file for LoFreq primer-overlap rescue in BAM mode "
+            "(BAMs are not amplicon-clipped by vartracker)"
+        ),
+    )
+    _add_lofreq_primer_rescue_arguments(snk_group)
     snk_group.add_argument(
         "--snakemake-dryrun",
         action="store_true",
@@ -518,6 +1018,16 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
         action="store_true",
         help="Force Snakemake to recompute all targets (forceall)",
         default=False,
+    )
+
+    _configure_vcf_parser(
+        bam_parser,
+        include_input_csv=True,
+        input_csv_required=False,
+        include_consensus_options=True,
+    )
+    _move_action_group_after(
+        bam_parser, "Snakemake options", "Vartracker Analysis Options"
     )
 
     bam_parser.set_defaults(handler=_run_bam_command, _subparser=bam_parser)
@@ -688,6 +1198,520 @@ def _add_schema_subparser(subparsers):
     schema_parser.set_defaults(handler=_run_describe_output_command)
 
 
+def _run_plot_command(args):
+    if getattr(args, "handler", None) is None or args.command == "plot":
+        args._subparser.print_help()
+        return 1
+    return args.handler(args)
+
+
+def _prepare_standalone_plot_inputs(args):
+    results_csv = Path(args.results_csv).expanduser().resolve()
+    table = load_results_table(results_csv)
+    summary, long_df, sample_names, sample_numbers = prepare_plot_inputs(table)
+    shared_kwargs = _collect_shared_plot_kwargs(args)
+    summary, long_df = apply_shared_plot_filters(summary, long_df, **shared_kwargs)
+    project_name = _project_name_from_results(table, getattr(args, "name", None))
+    return (
+        results_csv,
+        table,
+        summary,
+        long_df,
+        sample_names,
+        sample_numbers,
+        project_name,
+        shared_kwargs,
+    )
+
+
+def _run_plot_trajectory_command(args):
+    try:
+        (
+            results_csv,
+            _table,
+            summary,
+            long_df,
+            _sample_names,
+            _sample_numbers,
+            project_name,
+            shared_kwargs,
+        ) = _prepare_standalone_plot_inputs(args)
+        thresholds = parse_thresholds(args.thresholds)
+        if args.crossing_only and not thresholds:
+            raise InputValidationError("--crossing-only requires --thresholds")
+        if args.crossing_only:
+            summary = get_threshold_crossing_variants(
+                summary,
+                long_df,
+                thresholds,
+                crossing_rule=args.crossing_rule,
+            )
+            long_df = long_df[long_df["variant_id"].isin(summary["variant_id"])]
+            if summary.empty:
+                raise ProcessingError("No variants crossed the requested thresholds")
+        selected = _resolve_plot_variants(
+            summary,
+            explicit_variants=shared_kwargs["variants"],
+            top_n=args.top_n,
+            prefer_crossing=bool(thresholds),
+            thresholds=thresholds,
+        )
+        output_path = resolve_plot_output_path(
+            results_csv,
+            out=args.out,
+            outdir=args.outdir,
+            fmt=args.format,
+            filename="variant_trajectory_plot",
+        )
+        plot_variant_trajectory(
+            summary,
+            long_df,
+            selected_variants=selected,
+            output_path=output_path,
+            thresholds=thresholds,
+            title=args.title
+            or (f"{project_name}: variant trajectories" if project_name else None),
+            width=args.width,
+            height=args.height,
+            dpi=args.dpi,
+            label_lines=args.label_lines,
+            label_threshold_crossers=args.label_threshold_crossers,
+            crossing_rule=args.crossing_rule,
+            label_mode=args.label_mode,
+            sample_axis_mode=args.sample_axis,
+        )
+        print(f"\nFinished: wrote {output_path}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+
+def _run_plot_turnover_command(args):
+    try:
+        (
+            results_csv,
+            _table,
+            summary,
+            long_df,
+            _sample_names,
+            _sample_numbers,
+            project_name,
+            shared_kwargs,
+        ) = _prepare_standalone_plot_inputs(args)
+        if shared_kwargs["variants"]:
+            summary = summary[summary["variant_id"].isin(shared_kwargs["variants"])]
+            long_df = long_df[long_df["variant_id"].isin(summary["variant_id"])]
+            if summary.empty:
+                raise ProcessingError(
+                    "None of the requested variants were found in the filtered results"
+                )
+        output_path = resolve_plot_output_path(
+            results_csv,
+            out=args.out,
+            outdir=args.outdir,
+            fmt=args.format,
+            filename="variant_turnover_plot",
+        )
+        plot_variant_turnover(
+            summary,
+            long_df,
+            output_path=output_path,
+            title=args.title
+            or (f"{project_name}: variant turnover" if project_name else None),
+            width=args.width,
+            height=args.height,
+            dpi=args.dpi,
+            count_mode=args.count_mode,
+            sample_axis_mode=args.sample_axis,
+        )
+        print(f"\nFinished: wrote {output_path}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+
+def _run_plot_lifespan_command(args):
+    try:
+        (
+            results_csv,
+            _table,
+            summary,
+            _long_df,
+            _sample_names,
+            _sample_numbers,
+            project_name,
+            shared_kwargs,
+        ) = _prepare_standalone_plot_inputs(args)
+        selected = _resolve_plot_variants(
+            summary,
+            explicit_variants=shared_kwargs["variants"],
+            top_n=args.top_n,
+        )
+        output_path = resolve_plot_output_path(
+            results_csv,
+            out=args.out,
+            outdir=args.outdir,
+            fmt=args.format,
+            filename="variant_lifespan_plot",
+        )
+        plot_variant_lifespan(
+            summary,
+            selected_variants=selected,
+            output_path=output_path,
+            title=args.title
+            or (f"{project_name}: variant lifespan" if project_name else None),
+            width=args.width,
+            height=args.height,
+            dpi=args.dpi,
+            sort_by=args.sort_by,
+            annotate_class=args.annotate_class,
+            sample_axis_mode=args.sample_axis,
+            sample_names=_sample_names,
+            sample_numbers=_sample_numbers,
+        )
+        print(f"\nFinished: wrote {output_path}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+
+def _run_plot_genome_command(args):
+    try:
+        results_csv = Path(args.results_csv).expanduser().resolve()
+        table = load_results_table(results_csv)
+        project_name = _project_name_from_results(table, getattr(args, "name", None))
+        metadata = load_reference_feature_metadata(results_csv)
+        focus_ranges, focus_labels = resolve_focus_regions(
+            args.focus_coords, args.focus_region_file
+        )
+        output_path = resolve_plot_output_path(
+            results_csv,
+            out=args.out,
+            outdir=args.outdir,
+            fmt=args.format,
+            filename="variant_genome_plot",
+        )
+        plot_variant_genome(
+            table,
+            metadata,
+            output_path=output_path,
+            gene=args.gene,
+            aa_scale=args.aa_scale,
+            cds_scale=args.cds_scale,
+            focus_ranges=focus_ranges,
+            focus_labels=focus_labels,
+            min_af=args.min_af,
+            max_af=args.max_af,
+            effects=_parse_csv_option_list(args.effect),
+            persistent_only=args.persistent_only,
+            new_only=args.new_only,
+            include_indels=args.include_indels,
+            show_intersections=args.show_intersections,
+            title=args.title
+            or (
+                f"{project_name}: genome variant distribution" if project_name else None
+            ),
+            width=args.width,
+            height=args.height,
+            dpi=args.dpi,
+        )
+        print(f"\nFinished: wrote {output_path}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+
+
+def _add_plot_heatmap_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "heatmap",
+        aliases=["hm"],
+        help="Regenerate the variant heatmap from an existing results CSV",
+        description="Read a vartracker results CSV and regenerate the heatmap outputs.",
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    heatmap_group = parser.add_argument_group("Heatmap options")
+    heatmap_group.add_argument(
+        "--title",
+        default=None,
+        help="Plot title for the heatmap (default: Variant allele frequencies)",
+    )
+    heatmap_group.add_argument(
+        "--literature-csv",
+        default=None,
+        help="Optional literature hits CSV to link from the interactive heatmap",
+    )
+    heatmap_group.add_argument(
+        "--x-labels",
+        choices=["sample-name", "sample-number"],
+        default="sample-name",
+        help="X-axis labels to use for the heatmap (default: sample-name)",
+    )
+    _add_heatmap_option_arguments(
+        heatmap_group, prefix="", add_legacy_prefixed_aliases=True
+    )
+    parser.set_defaults(handler=_run_plot_heatmap_command)
+
+
+def _add_plot_trajectory_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "trajectory",
+        help="Plot selected variant trajectories from an existing results CSV",
+        description="Generate allele-frequency trajectory plots from a vartracker results CSV.",
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    filter_group = parser.add_argument_group("Filtering")
+    _add_shared_plot_filter_arguments(filter_group)
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=DEFAULT_TRAJECTORY_TOP_N,
+        help=f"Auto-select up to this many variants when --variants is not used (default: {DEFAULT_TRAJECTORY_TOP_N})",
+    )
+    parser.add_argument(
+        "--label-lines",
+        action="store_true",
+        default=False,
+        help="Add end labels to plotted lines",
+    )
+    parser.add_argument(
+        "--label-mode",
+        choices=["aa", "nt"],
+        default="aa",
+        help="Use amino-acid-style labels or nucleotide-level variant labels (default: aa)",
+    )
+    parser.add_argument(
+        "--sample-axis",
+        choices=["number", "name"],
+        default="number",
+        help="Use sample numbers or sample names on the x-axis (default: number)",
+    )
+    parser.add_argument(
+        "--thresholds",
+        default="",
+        help="Comma-separated AF thresholds to draw, e.g. 0.5,0.9",
+    )
+    parser.add_argument(
+        "--crossing-only",
+        action="store_true",
+        default=False,
+        help="Only keep variants crossing at least one requested threshold",
+    )
+    parser.add_argument(
+        "--label-threshold-crossers",
+        action="store_true",
+        default=False,
+        help="Label variants that cross at least one supplied threshold",
+    )
+    parser.add_argument(
+        "--crossing-rule",
+        choices=["at_or_above", "strictly_above"],
+        default="at_or_above",
+        help="How to evaluate exact threshold matches (default: at_or_above)",
+    )
+    parser.add_argument("--title", default=None, help="Optional plot title")
+    parser.add_argument(
+        "--width", type=float, default=8.5, help="Figure width in inches"
+    )
+    parser.add_argument(
+        "--height", type=float, default=5.5, help="Figure height in inches"
+    )
+    _add_plot_output_arguments(parser)
+    parser.set_defaults(handler=_run_plot_trajectory_command)
+
+
+def _add_plot_turnover_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "turnover",
+        help="Plot longitudinal variant turnover from an existing results CSV",
+        description="Generate new-versus-lost turnover summaries from a vartracker results CSV.",
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    filter_group = parser.add_argument_group("Filtering")
+    _add_shared_plot_filter_arguments(filter_group)
+    parser.add_argument(
+        "--count-mode",
+        choices=["count", "sum_af"],
+        default="count",
+        help="Aggregate turnover as counts or summed allele frequencies (default: count)",
+    )
+    parser.add_argument(
+        "--sample-axis",
+        choices=["number", "name"],
+        default="number",
+        help="Use sample numbers or sample names on the x-axis (default: number)",
+    )
+    parser.add_argument("--title", default=None, help="Optional plot title")
+    parser.add_argument(
+        "--width", type=float, default=8.5, help="Figure width in inches"
+    )
+    parser.add_argument(
+        "--height", type=float, default=5.0, help="Figure height in inches"
+    )
+    _add_plot_output_arguments(parser)
+    parser.set_defaults(handler=_run_plot_turnover_command)
+
+
+def _add_plot_lifespan_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "lifespan",
+        help="Plot first-to-last detection spans from an existing results CSV",
+        description="Generate a horizontal lifespan plot from a vartracker results CSV.",
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    filter_group = parser.add_argument_group("Filtering")
+    _add_shared_plot_filter_arguments(filter_group)
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=DEFAULT_LIFESPAN_TOP_N,
+        help=f"Auto-select up to this many variants when --variants is not used (default: {DEFAULT_LIFESPAN_TOP_N})",
+    )
+    parser.add_argument(
+        "--sort-by",
+        choices=["first_seen", "last_seen", "duration", "max_af"],
+        default="duration",
+        help="Sort plotted variants by this summary metric (default: duration)",
+    )
+    parser.add_argument(
+        "--annotate-class",
+        action="store_true",
+        default=False,
+        help="Append variant/new and persistent/transient classes to labels",
+    )
+    parser.add_argument(
+        "--sample-axis",
+        choices=["number", "name"],
+        default="number",
+        help="Use sample numbers or sample names on the x-axis (default: number)",
+    )
+    parser.add_argument("--title", default=None, help="Optional plot title")
+    parser.add_argument(
+        "--width", type=float, default=8.5, help="Figure width in inches"
+    )
+    parser.add_argument(
+        "--height", type=float, default=6.0, help="Figure height in inches"
+    )
+    _add_plot_output_arguments(parser)
+    parser.set_defaults(handler=_run_plot_lifespan_command)
+
+
+def _add_plot_genome_subparser(subparsers):
+    parser = subparsers.add_parser(
+        "genome",
+        help="Plot collapsed variant allele frequencies along the genome",
+        description=(
+            "Generate a genome-position summary plot from a vartracker results CSV."
+        ),
+        formatter_class=HelpFormatter,
+    )
+    parser.add_argument("results_csv", help="Path to a vartracker results CSV")
+    filter_group = parser.add_argument_group("Filtering")
+    filter_group.add_argument("--gene", default=None, help="Restrict to a single gene")
+    filter_group.add_argument(
+        "--effect",
+        default="",
+        help="Comma-separated effect classes to include (e.g. missense,synonymous)",
+    )
+    filter_group.add_argument(
+        "--min-af",
+        type=float,
+        default=None,
+        help="Minimum collapsed allele frequency to include",
+    )
+    filter_group.add_argument(
+        "--max-af",
+        type=float,
+        default=None,
+        help="Maximum collapsed allele frequency to include",
+    )
+    filter_group.add_argument(
+        "--persistent-only",
+        action="store_true",
+        default=False,
+        help="Only include variants with persistence_status == new_persistent",
+    )
+    filter_group.add_argument(
+        "--new-only",
+        action="store_true",
+        default=False,
+        help="Only include variants with variant_status == new",
+    )
+    filter_group.add_argument(
+        "--include-indels",
+        action="store_true",
+        default=False,
+        help="Include indels as well as SNPs in the genome plot (default: SNPs only)",
+    )
+    parser.add_argument(
+        "--aa-scale",
+        action="store_true",
+        default=False,
+        help="With --gene, plot x-axis in amino-acid coordinates for that gene",
+    )
+    parser.add_argument(
+        "--cds-scale",
+        action="store_true",
+        default=False,
+        help="With --gene, plot x-axis in CDS-relative nucleotide coordinates for that gene",
+    )
+    parser.add_argument(
+        "--focus-coords",
+        default="",
+        help=(
+            "Coordinate ranges to highlight. Use commas for separate ranges or "
+            "semicolons to group ranges with the same color, e.g. "
+            "150-300,900-1800;50-120 or Name:150-300,900-1800;Other:50-120"
+        ),
+    )
+    parser.add_argument(
+        "--focus-region-file",
+        default="",
+        help=(
+            "Optional JSON/CSV/TSV file defining named focus region groups for the "
+            "genome plot"
+        ),
+    )
+    parser.add_argument(
+        "--show-intersections",
+        action="store_true",
+        default=False,
+        help="Show a compact table of variants intersecting the highlighted focus regions",
+    )
+    parser.add_argument("--title", default=None, help="Optional plot title")
+    parser.add_argument(
+        "--width", type=float, default=10.0, help="Figure width in inches"
+    )
+    parser.add_argument(
+        "--height", type=float, default=6.5, help="Figure height in inches"
+    )
+    _add_plot_output_arguments(parser)
+    parser.set_defaults(handler=_run_plot_genome_command)
+
+
+def _add_plot_subparser(subparsers):
+    plot_parser = subparsers.add_parser(
+        "plot",
+        help="Regenerate plots from existing vartracker outputs",
+        description="Regenerate selected plots from an existing vartracker results file.",
+        formatter_class=HelpFormatter,
+    )
+    plot_subparsers = plot_parser.add_subparsers(dest="plot_command")
+    _add_plot_heatmap_subparser(plot_subparsers)
+    _add_plot_genome_subparser(plot_subparsers)
+    _add_plot_trajectory_subparser(plot_subparsers)
+    _add_plot_turnover_subparser(plot_subparsers)
+    _add_plot_lifespan_subparser(plot_subparsers)
+    plot_parser.set_defaults(handler=_run_plot_command, _subparser=plot_parser)
+
+
 def create_parser():
     """Create and return the top-level argument parser with subcommands."""
 
@@ -703,6 +1727,7 @@ def create_parser():
     _add_vcf_subparser(subparsers)
     _add_bam_subparser(subparsers)
     _add_e2e_subparser(subparsers)
+    _add_plot_subparser(subparsers)
     _add_prep_subparser(subparsers)
     _add_schema_subparser(subparsers)
 
@@ -743,6 +1768,11 @@ def _normalise_rulegraph_path(path: str | None) -> str | None:
     if not resolved.lower().endswith(".dot"):
         resolved = f"{resolved}.dot"
     return str(Path(resolved).resolve())
+
+
+def _drop_exact_duplicate_result_rows(table: pd.DataFrame) -> pd.DataFrame:
+    deduped = table.drop_duplicates().reset_index(drop=True)
+    return deduped
 
 
 def main(sysargs=None):
@@ -887,9 +1917,9 @@ def _run_vcf_command(args):
                 optional_empty={"reads1", "reads2", "bam"},
             )
 
-            # Apply passage cap if specified
-            if args.passage_cap is not None:
-                input_file = input_file[input_file["sample_number"] <= args.passage_cap]
+            # Apply sample cap if specified
+            if args.sample_cap is not None:
+                input_file = input_file[input_file["sample_number"] <= args.sample_cap]
 
             literature = None
             if args.search_pokay and args.literature_csv is not None:
@@ -969,6 +1999,9 @@ def _run_vcf_command(args):
             outputs = {
                 "results_csv": os.path.join(args.outdir, args.filename),
                 "results_metadata": str(results_metadata_path),
+                "reference_features": os.path.join(
+                    args.outdir, "reference_features.json"
+                ),
                 "new_mutations_csv": os.path.join(args.outdir, "new_mutations.csv"),
                 "persistent_new_mutations_csv": os.path.join(
                     args.outdir, "persistent_new_mutations.csv"
@@ -978,6 +2011,12 @@ def _run_vcf_command(args):
                 ),
                 "mutations_per_gene_plot": os.path.join(
                     args.outdir, "mutations_per_gene.pdf"
+                ),
+                "variant_turnover_plot": os.path.join(
+                    args.outdir, "variant_turnover_plot.pdf"
+                ),
+                "variant_genome_plot": os.path.join(
+                    args.outdir, "variant_genome_plot.pdf"
                 ),
                 "variant_allele_frequency_heatmap_html": os.path.join(
                     args.outdir, "variant_allele_frequency_heatmap.html"
@@ -1040,8 +2079,6 @@ def _add_e2e_subparser(subparsers):
         aliases=["e2e"],
     )
 
-    _configure_vcf_parser(e2e_parser, include_input_csv=False)
-
     e2e_parser.add_argument(
         "samples_csv",
         nargs="?",
@@ -1062,8 +2099,18 @@ def _add_e2e_subparser(subparsers):
     )
     snk_group.add_argument(
         "--primer-bed",
-        help="Optional primer BED file for amplicon clipping in Snakemake",
+        help=(
+            "Optional primer BED file for amplicon clipping and LoFreq "
+            "primer-overlap rescue"
+        ),
     )
+    snk_group.add_argument(
+        "--ampliconclip-tolerance",
+        type=int,
+        default=1,
+        help="Tolerance for samtools ampliconclip primer matching (default: 1)",
+    )
+    _add_lofreq_primer_rescue_arguments(snk_group)
     snk_group.add_argument(
         "--snakemake-dryrun",
         action="store_true",
@@ -1086,6 +2133,15 @@ def _add_e2e_subparser(subparsers):
         action="store_true",
         help="Force Snakemake to recompute all targets (forceall)",
         default=False,
+    )
+
+    _configure_vcf_parser(
+        e2e_parser,
+        include_input_csv=False,
+        include_consensus_options=True,
+    )
+    _move_action_group_after(
+        e2e_parser, "Snakemake options", "Vartracker Analysis Options"
     )
 
     e2e_parser.set_defaults(handler=_run_e2e_command, _subparser=e2e_parser)
@@ -1173,11 +2229,22 @@ def _run_e2e_command(args):
             outdir=snakemake_outdir,
             cores=args.cores,
             primer_bed=args.primer_bed,
+            ampliconclip_tolerance=args.ampliconclip_tolerance,
+            min_depth=args.min_depth,
+            consensus_snp_min_af=args.consensus_snp_min_af,
+            consensus_snp_thresh=args.consensus_snp_thresh,
+            consensus_indel_thresh=args.consensus_indel_thresh,
             dryrun=args.snakemake_dryrun,
             force_all=args.redo,
             quiet=not args.verbose,
             mode="reads",
             rulegraph_path=rulegraph_path,
+            lofreq_primer_rescue=args.lofreq_primer_rescue,
+            lofreq_rescue_min_af=args.lofreq_rescue_min_af,
+            lofreq_rescue_min_dp=args.lofreq_rescue_min_dp,
+            lofreq_rescue_min_alt_count=args.lofreq_rescue_min_alt_count,
+            lofreq_rescue_min_qual=args.lofreq_rescue_min_qual,
+            lofreq_rescue_max_ref_count=args.lofreq_rescue_max_ref_count,
         )
 
         if rulegraph_path:
@@ -1314,12 +2381,22 @@ def _run_bam_command(args):
             reference=args.reference,
             outdir=snakemake_outdir,
             cores=args.cores,
-            primer_bed=None,
+            primer_bed=args.primer_bed,
+            min_depth=args.min_depth,
+            consensus_snp_min_af=args.consensus_snp_min_af,
+            consensus_snp_thresh=args.consensus_snp_thresh,
+            consensus_indel_thresh=args.consensus_indel_thresh,
             dryrun=args.snakemake_dryrun,
             force_all=args.redo,
             quiet=not args.verbose,
             mode="bam",
             rulegraph_path=rulegraph_path,
+            lofreq_primer_rescue=args.lofreq_primer_rescue,
+            lofreq_rescue_min_af=args.lofreq_rescue_min_af,
+            lofreq_rescue_min_dp=args.lofreq_rescue_min_dp,
+            lofreq_rescue_min_alt_count=args.lofreq_rescue_min_alt_count,
+            lofreq_rescue_min_qual=args.lofreq_rescue_min_qual,
+            lofreq_rescue_max_ref_count=args.lofreq_rescue_max_ref_count,
         )
 
         if rulegraph_path:
@@ -1373,6 +2450,96 @@ def _run_bam_command(args):
     finally:
         if test_context is not None:
             test_context.cleanup()
+
+
+def _run_plot_heatmap_command(args):
+    try:
+        results_csv = Path(args.results_csv).expanduser().resolve()
+        if not results_csv.exists():
+            raise InputValidationError(f"Results CSV not found: {results_csv}")
+
+        outdir = results_csv.parent
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        table = pd.read_csv(results_csv, keep_default_na=False)
+        if table.empty:
+            raise InputValidationError("Results CSV is empty")
+        if "samples" not in table.columns:
+            raise InputValidationError(
+                "Results CSV must contain a 'samples' column to regenerate the heatmap"
+            )
+
+        sample_names = [
+            token.strip()
+            for token in str(table.iloc[0]["samples"]).split(" / ")
+            if token.strip()
+        ]
+        if not sample_names:
+            raise InputValidationError(
+                "Could not determine sample names from the results CSV"
+            )
+        sample_numbers = [
+            token.strip()
+            for token in str(table.iloc[0].get("sample_number", "")).split(" / ")
+            if token.strip()
+        ]
+        if args.x_labels == "sample-number":
+            if not sample_numbers:
+                raise InputValidationError(
+                    "Results CSV must contain a 'sample_number' column to use "
+                    "--x-labels sample-number"
+                )
+            if len(sample_numbers) != len(sample_names):
+                raise InputValidationError(
+                    "Results CSV has mismatched 'samples' and 'sample_number' columns"
+                )
+            x_tick_labels = sample_numbers
+        else:
+            x_tick_labels = sample_names
+
+        literature_df = None
+        literature_path = None
+        if args.literature_csv:
+            literature_path = str(Path(args.literature_csv).expanduser().resolve())
+            if not Path(literature_path).exists():
+                raise InputValidationError(
+                    f"Literature CSV not found: {literature_path}"
+                )
+            try:
+                literature_df = pd.read_csv(literature_path)
+            except Exception as exc:
+                raise InputValidationError(
+                    f"Could not read literature CSV: {exc}"
+                ) from exc
+
+        cli_command = getattr(args, "_invocation", None)
+        generate_variant_heatmap(
+            table,
+            sample_names,
+            sample_numbers or sample_names,
+            str(outdir),
+            "",
+            0.03,
+            0.1,
+            cli_command=cli_command,
+            x_tick_labels=x_tick_labels,
+            plot_title=args.title,
+            literature_hits=literature_df,
+            literature_table_path=literature_path,
+            **_collect_heatmap_kwargs(args),
+        )
+        print(f"\nFinished: find results in {outdir}\n")
+        return 0
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"\nERROR: {exc}\n")
+        return 1
+    except Exception as exc:
+        print(f"\nUnexpected error: {exc}\n")
+        if getattr(args, "debug", False):
+            import traceback
+
+            traceback.print_exc()
+        return 1
 
 
 def _run_generate_command(args):
@@ -1500,9 +2667,9 @@ def _process_files(
         table = pd.read_csv(precomputed_path, keep_default_na=False)
     else:
         # Format VCF files
-        csq_paths = []
+        formatted_vcfs = []
         for vcf, sample in zip(vcfs, sample_names):
-            _, csq_path = format_vcf(
+            formatted_vcf, _ = format_vcf(
                 vcf,
                 sample,
                 tempdir,
@@ -1513,10 +2680,10 @@ def _process_files(
                 args.debug,
                 args.allele_frequency_tag,
             )
-            csq_paths.append(csq_path)
+            formatted_vcfs.append(formatted_vcf)
 
         # Prepare file lists for merging
-        new_vcfs = csq_paths
+        new_vcfs = formatted_vcfs
 
         # Write VCF list file
         with open(os.path.join(tempdir, "vcf_list.txt"), "w") as f:
@@ -1529,10 +2696,19 @@ def _process_files(
             for sample_name in sample_names:
                 f.write(f"{sample_name}\n")
 
-        # Merge VCF files
+        # Merge VCF files and annotate once across the merged longitudinal set.
         print("Annotating results...")
+        merged_vcf = os.path.join(tempdir, "vcf_merged.vcf")
+        merge_consequences(tempdir, merged_vcf, sample_names_file, args.debug)
         csq_file = os.path.join(tempdir, "vcf_annotated.vcf")
-        merge_consequences(tempdir, csq_file, sample_names_file, args.debug)
+        annotate_vcf(
+            merged_vcf,
+            csq_file,
+            args.reference,
+            args.gff3,
+            args.debug,
+            args.multiallelic_overflow,
+        )
 
         # Process VCF and extract variants
         print("Summarising results...")
@@ -1545,6 +2721,12 @@ def _process_files(
     else:
         pname = ""
 
+    table["sample_number"] = " / ".join(
+        [str(value) for value in list(input_file["sample_number"])]
+    )
+
+    table = _drop_exact_duplicate_result_rows(table)
+
     # Write initial results
     outfile = os.path.join(args.outdir, args.filename)
     table.fillna("").to_csv(outfile, index=None)
@@ -1554,6 +2736,9 @@ def _process_files(
         table = process_joint_variants(outfile)
     else:
         table = pd.read_csv(outfile, keep_default_na=False)
+
+    table = _drop_exact_duplicate_result_rows(table)
+    table.fillna("").to_csv(outfile, index=None)
 
     literature_hits_df = None
     literature_full_csv_path = None
@@ -1584,6 +2769,24 @@ def _process_files(
 
     gene_table = generate_gene_table(table, gene_lengths)
     plot_gene_table(gene_table, pname, args.outdir)
+    plot_variant_turnover(
+        *apply_shared_plot_filters(
+            *prepare_plot_inputs(table)[:2],
+            include_synonymous=True,
+        ),
+        output_path=os.path.join(args.outdir, "variant_turnover_plot.pdf"),
+        title=f"{pname}: variant turnover" if pname else None,
+    )
+    try:
+        write_reference_feature_metadata(args.gff3, args.outdir)
+        plot_variant_genome(
+            table,
+            load_reference_feature_metadata(outfile),
+            output_path=os.path.join(args.outdir, "variant_genome_plot.pdf"),
+            title=f"{pname}: genome variant distribution" if pname else None,
+        )
+    except (InputValidationError, ProcessingError) as exc:
+        print(f"Warning: skipped genome plot generation ({exc})")
     generate_variant_heatmap(
         table,
         sample_names,

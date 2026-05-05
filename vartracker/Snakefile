@@ -1,5 +1,17 @@
 import pandas as pd
 from pathlib import Path
+try:
+    from vartracker.consensus import consensus_genotype_for_variant
+    from vartracker.lofreq_primer_rescue import (
+        PrimerRescueThresholds,
+        rescue_lofreq_primer_variants,
+    )
+except ModuleNotFoundError:
+    from consensus import consensus_genotype_for_variant
+    from lofreq_primer_rescue import (
+        PrimerRescueThresholds,
+        rescue_lofreq_primer_variants,
+    )
 
 # Load samples from CSV
 samples_df = pd.read_csv(config["samples_csv"])
@@ -9,8 +21,28 @@ SAMPLES = samples_df.set_index("sample_name", drop=False).to_dict(orient="index"
 REF = config["reference"]
 OUTDIR = config.get("outdir", "results")
 PRIMER_BED = config.get("primer_bed", None)
+AMPLICONCLIP_TOLERANCE = int(config.get("ampliconclip_tolerance", 1))
 MODE = config.get("mode", "reads")
+MIN_DEPTH = int(config.get("min_depth", 10))
+CONSENSUS_SNP_MIN_AF = float(config.get("consensus_snp_min_af", 0.25))
+CONSENSUS_SNP_THRESH = float(config.get("consensus_snp_thresh", 0.75))
+CONSENSUS_INDEL_THRESH = float(config.get("consensus_indel_thresh", 0.75))
+LOFREQ_PRIMER_RESCUE = str(config.get("lofreq_primer_rescue", "auto")).lower()
+LOFREQ_RESCUE_MIN_AF = float(config.get("lofreq_rescue_min_af", 0.95))
+LOFREQ_RESCUE_MIN_DP = int(config.get("lofreq_rescue_min_dp", 100))
+LOFREQ_RESCUE_MIN_ALT_COUNT = int(config.get("lofreq_rescue_min_alt_count", 95))
+LOFREQ_RESCUE_MIN_QUAL = float(config.get("lofreq_rescue_min_qual", 100.0))
+LOFREQ_RESCUE_MAX_REF_COUNT = int(config.get("lofreq_rescue_max_ref_count", 20))
 
+if LOFREQ_PRIMER_RESCUE not in {"auto", "on", "off"}:
+    raise ValueError("lofreq_primer_rescue must be one of: auto, on, off")
+if LOFREQ_PRIMER_RESCUE == "on" and not PRIMER_BED:
+    raise ValueError("lofreq_primer_rescue='on' requires primer_bed")
+
+LOFREQ_PRIMER_RESCUE_ENABLED = (
+    LOFREQ_PRIMER_RESCUE == "on"
+    or (LOFREQ_PRIMER_RESCUE == "auto" and bool(PRIMER_BED))
+)
 
 def _value_or_blank(sample, key, allow_blank=False):
     value = SAMPLES[sample].get(key)
@@ -29,6 +61,51 @@ def _require_value(sample, key):
     return value
 
 
+def _first_fasta_record_id(fasta_path):
+    with open(fasta_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith(">"):
+                return line[1:].split()[0].strip()
+    return None
+
+
+def _primer_bed_contigs(primer_bed_path):
+    contigs = set()
+    with open(primer_bed_path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("track ") or line.startswith("browser "):
+                continue
+            contigs.add(line.split()[0])
+    return contigs
+
+
+def _validate_primer_bed_reference(primer_bed_path, reference_path):
+    reference_id = _first_fasta_record_id(reference_path)
+    if not reference_id:
+        raise ValueError(
+            f"Unable to determine reference FASTA ID from: {reference_path}"
+        )
+
+    bed_contigs = _primer_bed_contigs(primer_bed_path)
+    if not bed_contigs:
+        raise ValueError(f"Primer BED file contains no intervals: {primer_bed_path}")
+
+    mismatched = sorted(contig for contig in bed_contigs if contig != reference_id)
+    if mismatched:
+        joined = ", ".join(mismatched)
+        raise ValueError(
+            f"Primer BED contig(s) {joined!r} do not match reference FASTA ID "
+            f"{reference_id!r}"
+        )
+
+
+if PRIMER_BED:
+    _validate_primer_bed_reference(PRIMER_BED, REF)
+
+
 def _initial_bam(wildcards):
     if MODE == "reads":
         return f"{OUTDIR}/{wildcards.sample}/aligned.clipped.bam"
@@ -44,6 +121,8 @@ rule all:
         expand(f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz", sample=SAMPLES.keys()),
         expand(f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz.csi", sample=SAMPLES.keys()),
         expand(f"{OUTDIR}/{{sample}}/{{sample}}_depth.txt", sample=SAMPLES.keys()),
+        expand(f"{OUTDIR}/{{sample}}/{{sample}}_consensus.fasta", sample=SAMPLES.keys()),
+        expand(f"{OUTDIR}/{{sample}}/{{sample}}_iupac_consensus.fasta", sample=SAMPLES.keys()),
         f"{OUTDIR}/vartracker_execution_spreadsheet.csv"
 
 if MODE == "reads":
@@ -56,9 +135,12 @@ if MODE == "reads":
             bwt = REF + ".bwt",
             pac = REF + ".pac",
             sa = REF + ".sa"
+        log:
+            f"{OUTDIR}/logs/bwa_index.log"
         shell:
             """
-            bwa index {input.ref} 2> /dev/null
+            mkdir -p $(dirname {log})
+            bwa index {input.ref} 2> {log}
             """
 
     rule fastp:
@@ -71,10 +153,13 @@ if MODE == "reads":
             r2 = temp(f"{OUTDIR}/{{sample}}/trimmed_R2.fastq.gz"),
             html = temp(f"{OUTDIR}/{{sample}}/fastp.html"),
             json = temp(f"{OUTDIR}/{{sample}}/fastp.json")
+        log:
+            f"{OUTDIR}/{{sample}}/logs/fastp.log"
         threads: max(1, int(workflow.cores * 0.5))
         shell:
             """
             mkdir -p {OUTDIR}/{wildcards.sample}
+            mkdir -p $(dirname {log})
             if [ -n "{params.r2}" ]; then
                 fastp -i {input.r1} -I {params.r2} \
                     -o {output.r1} -O {output.r2} \
@@ -86,7 +171,7 @@ if MODE == "reads":
                     --correction \
                     --length_required 50 \
                     -h {output.html} \
-                    -j {output.json} 2> /dev/null
+                    -j {output.json} 2> {log}
             else
                 fastp -i {input.r1} \
                     -o {output.r1} \
@@ -96,7 +181,7 @@ if MODE == "reads":
                     --cut_mean_quality 20 \
                     --length_required 50 \
                     -h {output.html} \
-                    -j {output.json} 2> /dev/null
+                    -j {output.json} 2> {log}
                 touch {output.r2}
             fi
             """
@@ -112,20 +197,23 @@ if MODE == "reads":
             bai = temp(f"{OUTDIR}/{{sample}}/aligned.raw.bam.bai")
         params:
             rg = lambda w: f"@RG\\tID:{w.sample}\\tSM:{w.sample}\\tPL:ILLUMINA"
+        log:
+            f"{OUTDIR}/{{sample}}/logs/bwa_mem.log"
         threads: max(1, workflow.cores)
         shell:
             """
             mkdir -p {OUTDIR}/{wildcards.sample}
+            mkdir -p $(dirname {log})
             if [ -s {input.r2} ]; then
-                bwa mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} {input.r2} 2> /dev/null | \
+                bwa mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} {input.r2} 2> {log} | \
                     samtools view -b - | \
-                    samtools sort -@ {threads} -o {output.bam} 2> /dev/null
+                    samtools sort -@ {threads} -o {output.bam} 2>> {log}
             else
-                bwa mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} 2> /dev/null | \
+                bwa mem -t {threads} -R '{params.rg}' {input.ref} {input.r1} 2> {log} | \
                     samtools view -b - | \
-                    samtools sort -@ {threads} -o {output.bam} 2> /dev/null
+                    samtools sort -@ {threads} -o {output.bam} 2>> {log}
             fi
-            samtools index {output.bam}
+            samtools index {output.bam} 2>> {log}
             """
 
     rule ampliconclip:
@@ -133,24 +221,28 @@ if MODE == "reads":
             bam = f"{OUTDIR}/{{sample}}/aligned.raw.bam"
         output:
             bam = temp(f"{OUTDIR}/{{sample}}/aligned.clipped.bam"),
-            bai = temp(f"{OUTDIR}/{{sample}}/aligned.clipped.bam.bai"),
-            log = temp(f"{OUTDIR}/{{sample}}/ampliconclip.log")
+            bai = temp(f"{OUTDIR}/{{sample}}/aligned.clipped.bam.bai")
         params:
-            bed = PRIMER_BED if PRIMER_BED else ""
+            bed = PRIMER_BED if PRIMER_BED else "",
+            tolerance = AMPLICONCLIP_TOLERANCE
+        log:
+            f"{OUTDIR}/{{sample}}/logs/ampliconclip.log"
         threads: max(1, int(workflow.cores * 0.5))
         run:
             if PRIMER_BED:
                 shell("""
+                    mkdir -p $(dirname {log})
                     samtools ampliconclip -b {params.bed} -@ {threads} \
-                    --strand --both-ends -o - {input.bam} 2> {output.log} \
-                    | samtools sort -@ {threads} -o {output.bam} - 2> /dev/null
-                    samtools index {output.bam}
+                    --strand --tolerance {params.tolerance} -o - {input.bam} 2> {log} \
+                    | samtools sort -@ {threads} -o {output.bam} - 2>> {log}
+                    samtools index {output.bam} 2>> {log}
                 """)
             else:
                 shell("""
-                    cp {input.bam} {output.bam}
-                    samtools index {output.bam}
-                    touch {output.log}
+                    mkdir -p $(dirname {log})
+                    : > {log}
+                    cp {input.bam} {output.bam} 2>> {log}
+                    samtools index {output.bam} 2>> {log}
                 """)
 
 rule lofreq_indelqual:
@@ -159,11 +251,14 @@ rule lofreq_indelqual:
         ref = REF
     output:
         bam = f"{OUTDIR}/{{sample}}/{{sample}}_aligned.indelqual.bam"
+    log:
+        f"{OUTDIR}/{{sample}}/logs/lofreq_indelqual.log"
     shell:
         """
         mkdir -p {OUTDIR}/{wildcards.sample}
-        lofreq indelqual --dindel -f {input.ref} -o {output.bam} {input.bam} 2> /dev/null
-        samtools index {output.bam}
+        mkdir -p $(dirname {log})
+        lofreq indelqual --dindel -f {input.ref} -o {output.bam} {input.bam} 2> {log}
+        samtools index {output.bam} 2>> {log}
         """
 
 rule samtools_depth:
@@ -171,9 +266,12 @@ rule samtools_depth:
         bam = f"{OUTDIR}/{{sample}}/{{sample}}_aligned.indelqual.bam"
     output:
         depth = f"{OUTDIR}/{{sample}}/{{sample}}_depth.txt"
+    log:
+        f"{OUTDIR}/{{sample}}/logs/samtools_depth.log"
     shell:
         """
-        samtools depth -aa {input.bam} > {output.depth} 2> /dev/null
+        mkdir -p $(dirname {log})
+        samtools depth -aa {input.bam} > {output.depth} 2> {log}
         """
 
 rule lofreq_call:
@@ -181,32 +279,313 @@ rule lofreq_call:
         bam = f"{OUTDIR}/{{sample}}/{{sample}}_aligned.indelqual.bam",
         ref = REF
     output:
-        vcf_raw = temp(f"{OUTDIR}/{{sample}}/{{sample}}_variants.raw.vcf"),
+        vcf_raw = temp(f"{OUTDIR}/{{sample}}/{{sample}}_variants.raw.vcf.gz"),
+        vcf_filtered = temp(f"{OUTDIR}/{{sample}}/{{sample}}_variants.filtered.vcf"),
+        rescued_tsv = f"{OUTDIR}/{{sample}}/{{sample}}_variants.rescued.tsv",
         vcf = f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz",
         csi = f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz.csi"
-    threads: max(1, workflow.cores)
+    log:
+        f"{OUTDIR}/{{sample}}/logs/lofreq_call.log"
+    threads: min(8, max(1, workflow.cores))
+    run:
+        log_path = Path(str(log[0]))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        shell("""
+            lofreq call-parallel --no-baq --call-indels --no-default-filter \
+                --pp-threads {threads} -f {input.ref} -o {output.vcf_raw} \
+                {input.bam} 2> {log}
+        """)
+
+        if LOFREQ_PRIMER_RESCUE_ENABLED:
+            thresholds = PrimerRescueThresholds(
+                min_af=LOFREQ_RESCUE_MIN_AF,
+                min_dp=LOFREQ_RESCUE_MIN_DP,
+                min_alt_count=LOFREQ_RESCUE_MIN_ALT_COUNT,
+                min_qual=LOFREQ_RESCUE_MIN_QUAL,
+                max_ref_count=LOFREQ_RESCUE_MAX_REF_COUNT,
+            )
+            result = rescue_lofreq_primer_variants(
+                raw_vcf=str(output.vcf_raw),
+                primers_bed=PRIMER_BED,
+                output_vcf=str(output.vcf_filtered),
+                rescued_tsv=str(output.rescued_tsv),
+                tmp_dir=str(log_path.parent),
+                thresholds=thresholds,
+            )
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "lofreq primer rescue: "
+                    f"normal_passed={result.normal_passed} "
+                    f"rescued={result.rescued} discarded={result.discarded}\n"
+                )
+        else:
+            shell(
+                "lofreq filter -i {output.vcf_raw} "
+                "-o {output.vcf_filtered} 2>> {log}"
+            )
+            with open(output.rescued_tsv, "w", encoding="utf-8") as handle:
+                handle.write("variant\treason_filtered\treason_rescued\tmetrics\n")
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write("lofreq primer rescue: disabled\n")
+
+        shell("bgzip -c {output.vcf_filtered} > {output.vcf} 2>> {log}")
+        shell("bcftools index -f {output.vcf} 2>> {log}")
+
+rule deletion_variants_bed:
+    input:
+        vcf = f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz"
+    output:
+        bed = temp(f"{OUTDIR}/{{sample}}/{{sample}}_deletions.bed")
+    params:
+        min_depth = MIN_DEPTH,
+        consensus_indel_thresh = CONSENSUS_INDEL_THRESH
+    log:
+        f"{OUTDIR}/{{sample}}/logs/deletion_variants_bed.log"
     shell:
         """
-        lofreq call-parallel --no-baq --call-indels --pp-threads {threads} \
-            -f {input.ref} -o {output.vcf_raw} {input.bam} 2> /dev/null
+        mkdir -p $(dirname {log})
+        bcftools query \
+            -i 'TYPE="indel" && strlen(REF)>strlen(ALT) && INFO/DP >= {params.min_depth} && INFO/AF >= {params.consensus_indel_thresh}' \
+            -f'%CHROM\\t%POS0\\t%END\\n' {input.vcf} > {output.bed} 2> {log}
+        """
 
-        bgzip -c {output.vcf_raw} > {output.vcf}
-        bcftools index {output.vcf}
+rule depth_mask:
+    input:
+        depth = f"{OUTDIR}/{{sample}}/{{sample}}_depth.txt",
+        deletions = rules.deletion_variants_bed.output.bed
+    output:
+        mask = f"{OUTDIR}/{{sample}}/{{sample}}_lowdepth.bed"
+    params:
+        min_depth = MIN_DEPTH
+    log:
+        f"{OUTDIR}/{{sample}}/logs/depth_mask.log"
+    run:
+        from collections import defaultdict
+
+        log_path = Path(str(log[0]))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        deletion_intervals = defaultdict(list)
+        with open(input.deletions, "r", encoding="utf-8") as handle:
+            for line in handle:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 3:
+                    continue
+                chrom, start, end = parts[:3]
+                deletion_intervals[chrom].append((int(start), int(end)))
+
+        for intervals in deletion_intervals.values():
+            intervals.sort()
+
+        def overlaps_deletion(chrom, pos0):
+            intervals = deletion_intervals.get(chrom, [])
+            for start, end in intervals:
+                if pos0 < start:
+                    return False
+                if start <= pos0 < end:
+                    return True
+            return False
+
+        mask_path = Path(str(output.mask))
+        mask_path.parent.mkdir(parents=True, exist_ok=True)
+
+        intervals_written = 0
+        current_chrom = None
+        current_start = None
+        current_end = None
+        with open(input.depth, "r", encoding="utf-8") as depth_handle, open(
+            mask_path, "w", encoding="utf-8"
+        ) as mask_handle:
+            for line in depth_handle:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 3:
+                    continue
+                chrom, pos_text, depth_text = parts[:3]
+                pos0 = int(pos_text) - 1
+                depth = int(depth_text)
+                should_mask = depth < params.min_depth and not overlaps_deletion(
+                    chrom, pos0
+                )
+
+                if not should_mask:
+                    if current_chrom is not None:
+                        mask_handle.write(
+                            f"{current_chrom}\t{current_start}\t{current_end}\n"
+                        )
+                        intervals_written += 1
+                        current_chrom = current_start = current_end = None
+                    continue
+
+                if current_chrom == chrom and current_end == pos0:
+                    current_end = pos0 + 1
+                else:
+                    if current_chrom is not None:
+                        mask_handle.write(
+                            f"{current_chrom}\t{current_start}\t{current_end}\n"
+                        )
+                        intervals_written += 1
+                    current_chrom = chrom
+                    current_start = pos0
+                    current_end = pos0 + 1
+
+            if current_chrom is not None:
+                mask_handle.write(f"{current_chrom}\t{current_start}\t{current_end}\n")
+                intervals_written += 1
+
+        log_path.write_text(
+            f"Wrote {intervals_written} low-depth mask intervals to {output.mask}\n",
+            encoding="utf-8",
+        )
+
+rule iupac_genotyped_vcf:
+    input:
+        vcf = f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz"
+    output:
+        vcf = temp(f"{OUTDIR}/{{sample}}/{{sample}}_iupac_genotyped.vcf.gz"),
+        csi = temp(f"{OUTDIR}/{{sample}}/{{sample}}_iupac_genotyped.vcf.gz.csi")
+    params:
+        sample = "{sample}",
+        min_depth = MIN_DEPTH,
+        consensus_snp_min_af = CONSENSUS_SNP_MIN_AF,
+        consensus_snp_thresh = CONSENSUS_SNP_THRESH,
+        consensus_indel_thresh = CONSENSUS_INDEL_THRESH
+    log:
+        f"{OUTDIR}/{{sample}}/logs/iupac_genotyped_vcf.log"
+    run:
+        import gzip
+        import os
+
+        log_path = Path(str(log[0]))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def open_text(path):
+            if str(path).endswith(".gz"):
+                return gzip.open(path, "rt", encoding="utf-8")
+            return open(path, "r", encoding="utf-8")
+
+        def info_value(info, key, default=None):
+            for item in info.split(";"):
+                if item.startswith(f"{key}="):
+                    return item.split("=", 1)[1]
+            return default
+
+        def genotype_for(ref, alt, info):
+            try:
+                depth = int(float(info_value(info, "DP", "0")))
+                af = float(info_value(info, "AF", "0").split(",", 1)[0])
+            except ValueError:
+                return "./."
+
+            return consensus_genotype_for_variant(
+                ref,
+                alt,
+                depth=depth,
+                af=af,
+                min_depth=params.min_depth,
+                consensus_snp_min_af=params.consensus_snp_min_af,
+                consensus_snp_thresh=params.consensus_snp_thresh,
+                consensus_indel_thresh=params.consensus_indel_thresh,
+            )
+
+        tmp_vcf = f"{output.vcf}.tmp.vcf"
+        with open_text(input.vcf) as src, open(
+            tmp_vcf, "w", encoding="utf-8"
+        ) as dst:
+            for line in src:
+                if line.startswith("##"):
+                    dst.write(line)
+                    continue
+                if line.startswith("#CHROM"):
+                    dst.write(
+                        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+                    )
+                    dst.write(line.rstrip("\n") + f"\tFORMAT\t{params.sample}\n")
+                    continue
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) < 8:
+                    continue
+                gt = genotype_for(parts[3], parts[4], parts[7])
+                dst.write("\t".join(parts[:8] + ["GT", gt]) + "\n")
+
+        try:
+            shell("bgzip -c {tmp_vcf} > {output.vcf} 2> {log}")
+            shell("bcftools index -f -c {output.vcf} 2>> {log}")
+        finally:
+            if os.path.exists(tmp_vcf):
+                os.remove(tmp_vcf)
+
+rule consensus:
+    input:
+        ref = REF,
+        mask = rules.depth_mask.output.mask,
+        vcf = f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz"
+    output:
+        fasta = f"{OUTDIR}/{{sample}}/{{sample}}_consensus.fasta"
+    params:
+        prefix = "{sample}",
+        min_depth = MIN_DEPTH,
+        consensus_snp_thresh = CONSENSUS_SNP_THRESH,
+        consensus_indel_thresh = CONSENSUS_INDEL_THRESH
+    log:
+        f"{OUTDIR}/{{sample}}/logs/bcftools_consensus.log"
+    shell:
+        """
+        mkdir -p $(dirname {log})
+        bcftools consensus -p "{params.prefix} " \
+            -f {input.ref} \
+            --mark-del '-' \
+            -m {input.mask} \
+            -i 'INFO/DP >= {params.min_depth} && ((TYPE="snp" && INFO/AF >= {params.consensus_snp_thresh}) || (TYPE!="snp" && INFO/AF >= {params.consensus_indel_thresh}))' \
+            {input.vcf} -o {output.fasta} > {log} 2>&1
+        """
+
+rule iupac_consensus:
+    input:
+        ref = REF,
+        mask = rules.depth_mask.output.mask,
+        vcf = rules.iupac_genotyped_vcf.output.vcf,
+        csi = rules.iupac_genotyped_vcf.output.csi
+    output:
+        fasta = f"{OUTDIR}/{{sample}}/{{sample}}_iupac_consensus.fasta"
+    params:
+        prefix = "{sample}",
+        min_depth = MIN_DEPTH
+    log:
+        f"{OUTDIR}/{{sample}}/logs/bcftools_iupac_consensus.log"
+    shell:
+        """
+        mkdir -p $(dirname {log})
+        bcftools consensus -p "{params.prefix} IUPAC " \
+            -f {input.ref} \
+            --mark-del '-' \
+            -m {input.mask} \
+            -s "{params.prefix}" \
+            -H I \
+            -i 'INFO/DP >= {params.min_depth} && GT!="mis"' \
+            {input.vcf} -o {output.fasta} > {log} 2>&1
         """
 
 rule update_csv:
     input:
         vcfs = expand(f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz", sample=SAMPLES.keys()),
         depths = expand(f"{OUTDIR}/{{sample}}/{{sample}}_depth.txt", sample=SAMPLES.keys()),
-        bams = expand(f"{OUTDIR}/{{sample}}/{{sample}}_aligned.indelqual.bam", sample=SAMPLES.keys())
+        bams = expand(f"{OUTDIR}/{{sample}}/{{sample}}_aligned.indelqual.bam", sample=SAMPLES.keys()),
+        consensus = expand(f"{OUTDIR}/{{sample}}/{{sample}}_consensus.fasta", sample=SAMPLES.keys()),
+        iupac_consensus = expand(f"{OUTDIR}/{{sample}}/{{sample}}_iupac_consensus.fasta", sample=SAMPLES.keys())
     output:
         csv = f"{OUTDIR}/vartracker_execution_spreadsheet.csv"
     params:
         original_csv = config["samples_csv"],
         outdir = OUTDIR
+    log:
+        f"{OUTDIR}/logs/update_csv.log"
     run:
         import pandas as pd
         import os
+
+        log_path = Path(str(log[0]))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Read original CSV
         df = pd.read_csv(params.original_csv)
@@ -221,6 +600,19 @@ rule update_csv:
         df['coverage'] = df['sample_name'].apply(
             lambda x: os.path.abspath(f"{params.outdir}/{x}/{x}_depth.txt")
         )
+        df['lofreq_rescued_tsv'] = df['sample_name'].apply(
+            lambda x: os.path.abspath(f"{params.outdir}/{x}/{x}_variants.rescued.tsv")
+        )
+        df['consensus'] = df['sample_name'].apply(
+            lambda x: os.path.abspath(f"{params.outdir}/{x}/{x}_consensus.fasta")
+        )
+        df['iupac_consensus'] = df['sample_name'].apply(
+            lambda x: os.path.abspath(f"{params.outdir}/{x}/{x}_iupac_consensus.fasta")
+        )
 
         # Write updated CSV
         df.to_csv(output.csv, index=False)
+        log_path.write_text(
+            f"Updated execution spreadsheet written to {output.csv}\n",
+            encoding="utf-8",
+        )

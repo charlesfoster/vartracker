@@ -5,6 +5,7 @@ Contains functions for generating plots and analyzing mutation patterns.
 """
 
 import html
+import fnmatch
 import os
 import re
 import string
@@ -14,6 +15,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+from matplotlib.patches import Rectangle
 import seaborn as sns
 from .constants import REF_GENE_LENGTHS, NSP_LENGTHS, NSPS
 from .core import get_logo
@@ -21,6 +23,124 @@ from .core import get_logo
 # Global configuration for plotting
 plt.rcdefaults()
 mpl.rcParams["pdf.fonttype"] = 42
+
+HEATMAP_MIN_FIG_WIDTH = 4.0
+HEATMAP_COL_WIDTH = 1.2
+HEATMAP_MIN_FIG_HEIGHT = 4.0
+HEATMAP_MIN_ROW_HEIGHT = 0.65
+
+
+def _ensure_joint_prefix(change_type: object) -> str:
+    text = str(change_type or "").strip()
+    if not text:
+        return "joint"
+    normalised = re.sub(r"^(joint_)+", "", text)
+    return f"joint_{normalised}" if normalised else "joint"
+
+
+def _parse_slash_separated_tokens(value: object) -> list[str]:
+    if value is None:
+        return []
+    return [token.strip() for token in str(value).split(" / ")]
+
+
+def _match_any_pattern(value: object, patterns: Sequence[str]) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    return any(fnmatch.fnmatch(text, pattern) for pattern in patterns)
+
+
+def _normalise_all_samples_pass_qc(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"pass", "true", "t", "1", "yes", "y"}:
+        return "true"
+    if text in {"fail", "false", "f", "0", "no", "n"}:
+        return "false"
+    return text
+
+
+def _coerce_proportion_samples_passing_qc(row: object) -> float | None:
+    direct_value = getattr(row, "proportion_samples_passing_qc", None)
+    if direct_value not in {None, ""}:
+        try:
+            direct_text = str(direct_value).strip()
+            if direct_text:
+                return float(direct_text)
+        except (TypeError, ValueError):
+            pass
+
+    per_sample = str(getattr(row, "per_sample_variant_qc", "")).strip()
+    if not per_sample:
+        return None
+    tokens = _parse_slash_separated_tokens(per_sample)
+    if not tokens:
+        return None
+    passing = sum(str(token).strip().upper() == "P" for token in tokens)
+    return passing / len(tokens)
+
+
+def _parse_per_sample_qc_map(row: object) -> dict[str, str]:
+    sample_tokens = _parse_slash_separated_tokens(getattr(row, "samples", ""))
+    qc_tokens = _parse_slash_separated_tokens(getattr(row, "per_sample_variant_qc", ""))
+    return {
+        sample: str(token).strip().upper()
+        for sample, token in zip(sample_tokens, qc_tokens)
+        if str(sample).strip()
+    }
+
+
+def _heatmap_figure_size(n_rows: int, n_cols: int) -> tuple[float, float]:
+    width = max(HEATMAP_MIN_FIG_WIDTH, HEATMAP_COL_WIDTH * n_cols)
+    height = max(HEATMAP_MIN_FIG_HEIGHT, HEATMAP_MIN_ROW_HEIGHT * n_rows)
+    return width, height
+
+
+def _presence_vector(value: object) -> tuple[str, ...]:
+    return tuple(_parse_slash_separated_tokens(value))
+
+
+def _find_joint_main_index(tab: pd.DataFrame, joint_index: int, main_pos: int) -> int:
+    candidates = tab[
+        (tab["start"] == main_pos)
+        & ~tab["bcsq_aa_notation"].astype(str).str.startswith("@", na=False)
+    ].index.tolist()
+    if not candidates:
+        raise IndexError(f"No main annotation found for joint position {main_pos}")
+    if len(candidates) == 1:
+        return candidates[0]
+
+    joint_presence = _presence_vector(tab.at[joint_index, "presence_absence"])
+
+    def candidate_score(candidate_index: int) -> tuple[int, int, int]:
+        candidate_presence = _presence_vector(
+            tab.at[candidate_index, "presence_absence"]
+        )
+        exact_match = int(candidate_presence == joint_presence)
+        shared_present = sum(
+            lhs == rhs == "Y" for lhs, rhs in zip(joint_presence, candidate_presence)
+        )
+        total_present = sum(token == "Y" for token in candidate_presence)
+        return (exact_match, shared_present, total_present)
+
+    best_score = max(candidate_score(candidate_index) for candidate_index in candidates)
+    tied_candidates = [
+        candidate_index
+        for candidate_index in candidates
+        if candidate_score(candidate_index) == best_score
+    ]
+    if len(tied_candidates) == 1:
+        return tied_candidates[0]
+
+    def tie_break_key(candidate_index: int) -> tuple[str, str, str, str]:
+        return (
+            str(tab.at[candidate_index, "gene"]),
+            str(tab.at[candidate_index, "amino_acid_consequence"]),
+            str(tab.at[candidate_index, "bcsq_nt_notation"]),
+            str(tab.at[candidate_index, "bcsq_aa_notation"]),
+        )
+
+    return min(tied_candidates, key=tie_break_key)
 
 
 def process_joint_variants(path):
@@ -51,7 +171,7 @@ def process_joint_variants(path):
         try:
             # Find the main pos and main index number
             main_pos = int(tab.loc[i]["bcsq_aa_notation"].replace("@", ""))
-            j = tab[tab["start"] == main_pos].index[0]
+            j = _find_joint_main_index(tab, i, main_pos)
 
             # Update the joint variant key
             tab.at[i, "joint_variant"] = True
@@ -75,8 +195,12 @@ def process_joint_variants(path):
                 tab.at[i, col] = tab.at[j, col]
 
             # Update type of change for joint variants
-            tab.at[i, "type_of_change"] = "joint_" + tab.at[j, "type_of_change"]
-            tab.at[j, "type_of_change"] = "joint_" + tab.at[j, "type_of_change"]
+            tab.at[i, "type_of_change"] = _ensure_joint_prefix(
+                tab.at[j, "type_of_change"]
+            )
+            tab.at[j, "type_of_change"] = _ensure_joint_prefix(
+                tab.at[j, "type_of_change"]
+            )
 
         except (ValueError, IndexError, KeyError) as e:
             print(f"Warning: Could not process joint variant at index {i}: {str(e)}")
@@ -490,6 +614,22 @@ def _prepare_variant_heatmap_matrix(
     sample_names: Sequence[str],
     min_snv_freq: float,
     min_indel_freq: float,
+    excluded_consequence_types: Sequence[str] | None = None,
+    included_consequence_types: Sequence[str] | None = None,
+    include_joint: bool = False,
+    only_persistent: bool = False,
+    only_new: bool = False,
+    gene_include: Sequence[str] | None = None,
+    gene_exclude: Sequence[str] | None = None,
+    variant_type_include: Sequence[str] | None = None,
+    qc_include: Sequence[str] | None = None,
+    min_prop_passing_qc: float | None = None,
+    min_persistence: int | None = None,
+    min_max_af: float | None = None,
+    min_sample_af: float | None = None,
+    sample_subset: Sequence[str] | None = None,
+    hide_singletons: bool = False,
+    min_depth: int | None = None,
     gene_lengths: Dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """Prepare a matrix of allele frequencies for heatmap plotting."""
@@ -504,6 +644,19 @@ def _prepare_variant_heatmap_matrix(
         ordered_samples = [
             s.strip() for s in str(table.iloc[0]["samples"]).split(" / ")
         ]
+    sample_subset_patterns = [
+        str(value).strip().lower()
+        for value in (sample_subset or [])
+        if str(value).strip()
+    ]
+    if sample_subset_patterns:
+        ordered_samples = [
+            sample
+            for sample in ordered_samples
+            if _match_any_pattern(sample, sample_subset_patterns)
+        ]
+    if not ordered_samples:
+        return pd.DataFrame(columns=[])
 
     use_nsps = True
     if gene_lengths is not None:
@@ -519,13 +672,59 @@ def _prepare_variant_heatmap_matrix(
             use_nsps = table["nsp_aa_change"].astype(str).str.contains(":").any()
 
     gene_order_map, _ = _build_gene_order_map(gene_lengths, include_nsps=use_nsps)
+    excluded_patterns = {
+        str(value).strip().lower()
+        for value in (excluded_consequence_types or [])
+        if str(value).strip()
+    }
+    included_patterns = {
+        str(value).strip().lower()
+        for value in (included_consequence_types or [])
+        if str(value).strip()
+    }
+    gene_include_patterns = {
+        str(value).strip().lower()
+        for value in (gene_include or [])
+        if str(value).strip()
+    }
+    gene_exclude_patterns = {
+        str(value).strip().lower()
+        for value in (gene_exclude or [])
+        if str(value).strip()
+    }
+    variant_type_patterns = {
+        str(value).strip().lower()
+        for value in (variant_type_include or [])
+        if str(value).strip()
+    }
+    qc_patterns = {
+        str(value).strip().lower() for value in (qc_include or []) if str(value).strip()
+    }
+    effective_min_af = max(
+        value
+        for value in (
+            0.0,
+            min_max_af if min_max_af is not None else 0.0,
+            min_sample_af if min_sample_af is not None else 0.0,
+        )
+    )
 
     records: List[Dict[str, Union[str, float, int]]] = []
     seen_labels = set()
+    qc_maps: dict[str, dict[str, str]] = {}
 
     for row in table.itertuples(index=False):
         gene_value = getattr(row, "gene", "")
         if str(gene_value) in {"5' UTR", "3' UTR", "INTERGENIC"}:
+            continue
+
+        if gene_include_patterns and not _match_any_pattern(
+            gene_value, list(gene_include_patterns)
+        ):
+            continue
+        if gene_exclude_patterns and _match_any_pattern(
+            gene_value, list(gene_exclude_patterns)
+        ):
             continue
 
         gene_label, display_label, base_label = _resolve_variant_labels(row)
@@ -533,20 +732,88 @@ def _prepare_variant_heatmap_matrix(
         if base_label in seen_labels:
             continue
 
-        variant_type = str(getattr(row, "type_of_variant", "")).lower()
+        change_type = str(getattr(row, "type_of_change", "")).strip().lower()
+        if not include_joint and change_type.startswith("joint"):
+            continue
+        if included_patterns and not any(
+            fnmatch.fnmatch(change_type, pattern) for pattern in included_patterns
+        ):
+            continue
+        if any(fnmatch.fnmatch(change_type, pattern) for pattern in excluded_patterns):
+            continue
 
-        sample_tokens = [
-            s.strip() for s in str(getattr(row, "samples", "")).split(" / ")
-        ]
+        if (
+            only_persistent
+            and str(getattr(row, "persistence_status", "")).strip().lower()
+            != "new_persistent"
+        ):
+            continue
+        if (
+            only_new
+            and str(getattr(row, "variant_status", "")).strip().lower() != "new"
+        ):
+            continue
+
+        variant_type = str(getattr(row, "type_of_variant", "")).lower()
+        if variant_type_patterns and not any(
+            fnmatch.fnmatch(variant_type, pattern) for pattern in variant_type_patterns
+        ):
+            continue
+        qc_value = _normalise_all_samples_pass_qc(
+            getattr(row, "all_samples_pass_qc", getattr(row, "overall_variant_qc", ""))
+        )
+        if qc_patterns and not _match_any_pattern(qc_value, list(qc_patterns)):
+            continue
+        qc_proportion = _coerce_proportion_samples_passing_qc(row)
+        if (
+            min_prop_passing_qc is not None
+            and qc_proportion is not None
+            and qc_proportion < min_prop_passing_qc
+        ):
+            continue
+        if min_prop_passing_qc is not None and qc_proportion is None:
+            continue
+
+        sample_tokens = _parse_slash_separated_tokens(getattr(row, "samples", ""))
         freq_tokens = [
             _coerce_frequency(token)
-            for token in str(getattr(row, "alt_freq", "")).split(" / ")
+            for token in _parse_slash_separated_tokens(getattr(row, "alt_freq", ""))
         ]
+        presence_tokens = _parse_slash_separated_tokens(
+            getattr(row, "presence_absence", "")
+        )
+        depth_tokens = _parse_slash_separated_tokens(
+            getattr(row, "variant_site_depth", "")
+        )
 
         if not freq_tokens:
             continue
 
-        max_freq = max(freq_tokens)
+        sample_freq_map = {
+            sample: freq for sample, freq in zip(sample_tokens, freq_tokens)
+        }
+        sample_presence_map = {
+            sample: token for sample, token in zip(sample_tokens, presence_tokens)
+        }
+        sample_depth_map: dict[str, float] = {}
+        for sample, token in zip(sample_tokens, depth_tokens):
+            text = str(token).strip()
+            if text in {"", ".", "M"}:
+                sample_depth_map[sample] = 0.0
+                continue
+            try:
+                sample_depth_map[sample] = float(text)
+            except ValueError:
+                sample_depth_map[sample] = 0.0
+
+        row_values = [sample_freq_map.get(sample, 0.0) for sample in ordered_samples]
+        row_presence = [
+            sample_presence_map.get(sample, "N") for sample in ordered_samples
+        ]
+        row_depths = [sample_depth_map.get(sample, 0.0) for sample in ordered_samples]
+        row_qc_map = _parse_per_sample_qc_map(row)
+
+        max_freq = max(row_values) if row_values else 0.0
 
         threshold = min_snv_freq
         if "indel" in variant_type:
@@ -554,11 +821,17 @@ def _prepare_variant_heatmap_matrix(
 
         if max_freq < threshold:
             continue
-
-        sample_freq_map = {
-            sample: freq for sample, freq in zip(sample_tokens, freq_tokens)
-        }
-        row_values = [sample_freq_map.get(sample, 0.0) for sample in ordered_samples]
+        if effective_min_af and max_freq < effective_min_af:
+            continue
+        if (
+            min_persistence is not None
+            and sum(token == "Y" for token in row_presence) < min_persistence
+        ):
+            continue
+        if hide_singletons and sum(token == "Y" for token in row_presence) <= 1:
+            continue
+        if min_depth is not None and max(row_depths, default=0.0) < min_depth:
+            continue
 
         record: Dict[str, Union[str, float, int]] = {
             "label": display_label,
@@ -571,6 +844,9 @@ def _prepare_variant_heatmap_matrix(
 
         records.append(record)
         seen_labels.add(base_label)
+        qc_maps[display_label] = {
+            sample: row_qc_map.get(sample, "") for sample in ordered_samples
+        }
 
     if not records:
         return pd.DataFrame(columns=ordered_samples)
@@ -591,6 +867,9 @@ def _prepare_variant_heatmap_matrix(
     matrix_df = matrix_df.reindex(columns=ordered_samples).fillna(0.0)
     matrix_df.attrs["base_labels"] = base_label_map
     matrix_df.attrs["canonical_labels"] = canonical_label_map
+    matrix_df.attrs["qc_by_label"] = {
+        label: qc_maps.get(label, {}) for label in matrix_df.index
+    }
 
     return matrix_df
 
@@ -705,17 +984,21 @@ def _write_interactive_heatmap_html(
     literature_df: Optional[pd.DataFrame],
     literature_table_path: Optional[str],
     cli_command: Optional[str],
+    sample_labels: Sequence[str] | None = None,
+    plot_title: str | None = None,
 ) -> None:
     if matrix.empty:
         return
 
-    x_labels = [str(name) for name in sample_names]
+    sample_keys = [str(name) for name in matrix.columns]
+    x_labels = [str(name) for name in (sample_labels or sample_names)]
     y_labels = list(matrix.index)
-    if not x_labels or not y_labels:
+    if not sample_keys or not x_labels or not y_labels:
         return
 
     label_map: Dict[str, str] = matrix.attrs.get("base_labels", {})
     canonical_label_map: Dict[str, str] = matrix.attrs.get("canonical_labels", {})
+    qc_by_label: Dict[str, Dict[str, str]] = matrix.attrs.get("qc_by_label", {})
 
     if (
         literature_df is None
@@ -773,17 +1056,22 @@ def _write_interactive_heatmap_html(
         grid_cells.append(header_html)
 
         row_values = matrix.loc[label]
-        for sample, value in zip(x_labels, row_values):
+        row_qc = qc_by_label.get(label, {})
+        for sample_key, sample_label, value in zip(sample_keys, x_labels, row_values):
             freq = float(value) if value is not None else 0.0
             color, text_value = _frequency_to_color(freq)
+            qc_value = row_qc.get(sample_key, "")
+            qc_failed = qc_value == "F"
             tooltip = html.escape(
                 f"Variant: {label.replace(chr(10), ' ')} • "
-                f"Sample: {sample} • "
-                f"Allele frequency: {freq:.3f}"
+                f"Sample: {sample_label} • "
+                f"AF={freq:.2f}, QC={'FAIL' if qc_failed else 'PASS'}"
             )
             classes = ["cell"]
             if not text_value:
                 classes.append("cell-empty")
+            if qc_failed:
+                classes.append("cell-qc-fail")
             cell_html = (
                 f'<div class="{" ".join(classes)}" '
                 f'style="background-color:{color};" '
@@ -799,7 +1087,7 @@ def _write_interactive_heatmap_html(
     )
     heatmap_scroll_html = f'<div class="heatmap-scroll">{heatmap_grid_html}</div>'
 
-    heatmap_title = (
+    heatmap_title = plot_title or (
         f"{project_name}: variant allele frequencies"
         if project_name
         else "Variant allele frequencies"
@@ -905,6 +1193,9 @@ def _write_interactive_heatmap_html(
     }}
     .cell-empty {{
       color: #1f2937;
+    }}
+    .cell-qc-fail {{
+      box-shadow: inset 0 0 0 2px #111827;
     }}
     .cell:hover {{
       transform: scale(1.03);
@@ -1068,16 +1359,54 @@ def generate_variant_heatmap(
     project_name: str,
     min_snv_freq: float,
     min_indel_freq: float,
+    excluded_consequence_types: Sequence[str] | None = None,
+    included_consequence_types: Sequence[str] | None = None,
+    include_joint: bool = False,
+    only_persistent: bool = False,
+    only_new: bool = False,
+    gene_include: Sequence[str] | None = None,
+    gene_exclude: Sequence[str] | None = None,
+    variant_type_include: Sequence[str] | None = None,
+    qc_include: Sequence[str] | None = None,
+    min_prop_passing_qc: float | None = None,
+    min_persistence: int | None = None,
+    min_max_af: float | None = None,
+    min_sample_af: float | None = None,
+    sample_subset: Sequence[str] | None = None,
+    hide_singletons: bool = False,
+    min_depth: int | None = None,
     gene_lengths: Dict[str, int] | None = None,
     literature_hits: Optional[pd.DataFrame] = None,
     literature_table_path: Optional[str] = None,
     cli_command: Optional[str] = None,
+    x_tick_labels: Sequence[str] | None = None,
+    plot_title: str | None = None,
 ):
     """Generate a heatmap of variant allele frequencies across passages."""
 
     try:
         heatmap_data = _prepare_variant_heatmap_matrix(
-            table, sample_names, min_snv_freq, min_indel_freq, gene_lengths
+            table,
+            sample_names,
+            min_snv_freq,
+            min_indel_freq,
+            excluded_consequence_types,
+            included_consequence_types,
+            include_joint,
+            only_persistent,
+            only_new,
+            gene_include,
+            gene_exclude,
+            variant_type_include,
+            qc_include,
+            min_prop_passing_qc,
+            min_persistence,
+            min_max_af,
+            min_sample_af,
+            sample_subset,
+            hide_singletons,
+            min_depth,
+            gene_lengths,
         )
         if heatmap_data.empty:
             print("No variant data available for heatmap; skipping plot.")
@@ -1085,10 +1414,14 @@ def generate_variant_heatmap(
 
         heatmap_path = os.path.join(outdir, "variant_allele_frequency_heatmap.pdf")
 
-        fig_width = max(4, 1.2 * len(heatmap_data.columns))
-        fig_height = max(4, 0.4 * len(heatmap_data))
+        fig_width, fig_height = _heatmap_figure_size(
+            len(heatmap_data.index), len(heatmap_data.columns)
+        )
         fig, ax = plt.subplots(figsize=(fig_width, fig_height))
         plot_data = heatmap_data.replace(0, np.nan)
+        qc_by_label: Dict[str, Dict[str, str]] = heatmap_data.attrs.get(
+            "qc_by_label", {}
+        )
         cmap = sns.color_palette("viridis", as_cmap=True).copy()
         cmap.set_bad(color="#d9d9d9")
         sns.heatmap(
@@ -1102,15 +1435,42 @@ def generate_variant_heatmap(
             ax=ax,
         )
 
-        heatmap_title = (
+        for row_idx, label in enumerate(heatmap_data.index):
+            row_qc = qc_by_label.get(label, {})
+            for col_idx, sample in enumerate(heatmap_data.columns):
+                if row_qc.get(sample, "") != "F":
+                    continue
+                ax.add_patch(
+                    Rectangle(
+                        (col_idx, row_idx),
+                        1,
+                        1,
+                        fill=False,
+                        edgecolor="black",
+                        linewidth=1.4,
+                        zorder=10,
+                    )
+                )
+
+        heatmap_title = plot_title or (
             f"{project_name}: variant allele frequencies"
             if project_name
             else "Variant allele frequencies"
         )
         ax.set_title(heatmap_title, weight="bold")
 
-        tick_labels = list(sample_names)
+        display_label_by_sample = dict(
+            zip(
+                [str(name) for name in sample_names],
+                [str(label) for label in (x_tick_labels or sample_names)],
+            )
+        )
+        tick_labels = [
+            display_label_by_sample.get(str(sample), str(sample))
+            for sample in heatmap_data.columns
+        ]
         ax.set_xticklabels(tick_labels, rotation=45, ha="right")
+        ax.tick_params(axis="y", labelsize=10)
         ax.set_xlabel("Sample", fontweight="bold")
         ax.set_ylabel("Variant (5' → 3')", fontweight="bold")
 
@@ -1127,6 +1487,8 @@ def generate_variant_heatmap(
                 literature_hits,
                 literature_table_path,
                 cli_command,
+                sample_labels=tick_labels,
+                plot_title=heatmap_title,
             )
         except Exception as html_exc:  # pragma: no cover - best-effort UX
             print(f"Warning: failed to generate interactive heatmap: {html_exc}")

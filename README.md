@@ -99,6 +99,7 @@ Minimum tested versions are tracked in `docs/DEPENDENCIES.md`.
 - **samtools**, **lofreq**, **fastp**, **bwa**, and **snakemake** – required for the `bam` and `end-to-end` Snakemake workflows
 
 If you only plan to run `vartracker vcf` against pre-generated VCFs, the first pair is sufficient. The additional tools are needed whenever you ask vartracker to align reads or call variants for you.
+Consensus genome generation in the `bam` and `end-to-end` workflows uses `bcftools` and `samtools`; it does not require `bedtools`.
 
 Note: the pinned micromamba environment installs `tabix`/`bgzip` via `htslib`.
 
@@ -202,6 +203,31 @@ vartracker end-to-end path/to/read_inputs.csv \
   --cores 12 \
   --outdir results/e2e_summary
 
+# Re-plot a heatmap from an existing vartracker results file
+vartracker plot heatmap results/results.csv \
+  --aa-exclude "*frameshift*" \
+  --x-labels sample-number \
+  --literature-csv results/sample.literature_database_hits.full.csv \
+  --title "Variant allele frequencies"
+
+# Plot whole-dataset turnover from an existing results file
+vartracker plot turnover results/results.csv
+
+# Plot collapsed variant frequencies along the genome
+vartracker plot genome results/results.csv
+
+# Zoom to a gene region, optionally using amino-acid coordinates
+vartracker plot genome results/results.csv --gene F --aa-scale
+
+# Plot selected variant trajectories from an existing results file
+vartracker plot trajectory results/results.csv \
+  --variants "S:D614G,S:E484K,S:N501Y"
+
+# Plot takeover-style trajectories using AF thresholds
+vartracker plot trajectory results/results.csv \
+  --thresholds 0.5,0.9 \
+  --crossing-only
+
 # Generate a template spreadsheet for a directory of files
 vartracker prepare spreadsheet --mode e2e --dir data/passaging --out inputs.csv
 
@@ -216,6 +242,29 @@ vartracker end-to-end --test
 
 All modes understand `--test`, which copies the example dataset from `vartracker/test_data`
 into a temporary directory, resolves relative paths, and runs the appropriate workflow.
+
+Temporary LoFreq note:
+- In `bam` and `end-to-end` mode, `vartracker` currently caps `lofreq call-parallel` at 8 threads even if `--cores` is higher.
+- This is a temporary workaround for an older Bioconda LoFreq build that can fail during `call-parallel` final filtering when many shards produce an excessively long merged VCF header.
+- The cap will be revisited once an updated LoFreq build is available through Bioconda.
+
+LoFreq primer-overlap rescue:
+- Amplicon schemes can create a specific LoFreq false-negative mode: after primer clipping, reads from one strand may be soft clipped at primer-overlap sites, so a genuine near-fixed variant can fail LoFreq's default strand-bias filter.
+- `bam` and `end-to-end` therefore run LoFreq with `--no-default-filter`, then apply the normal `lofreq filter` step so standard LoFreq PASS calls are unchanged.
+- With the default `--lofreq-primer-rescue auto`, the rescue step runs only when `--primer-bed` is supplied. In other words, `auto` means "use primer rescue when an amplicon primer scheme has been explicitly provided."
+- In `end-to-end` mode, the same `--primer-bed` is used for `samtools ampliconclip` and for rescue. In `bam` mode, vartracker does not clip the input BAMs; the primer BED is used only to identify primer-overlap sites for rescue.
+- Rescue candidates must be single-ALT SNPs that overlap a primer interval, fail the default LoFreq filter, and pass conservative near-fixed thresholds (`AF>=0.95`, `DP>=100`, `DP4 alt count>=95`, `QUAL>=100`, `DP4 ref count<=20`) with one-sided alternate-strand support. Indels, multi-ALT records, lower-frequency variants, and non-primer-overlap variants are not rescued by this rule.
+- Rescued variants are marked with `FILTER=RESCUED_PRIMER_OVERLAP`, `INFO/PRIMER_OVERLAP`, and `INFO/RESCUED_BY=overlap_primer_interval`; per-sample details are written to `<sample>_variants.rescued.tsv` and listed in the updated spreadsheet as `lofreq_rescued_tsv`.
+- Use `--lofreq-primer-rescue off` to disable rescue even when a primer BED is supplied, or `--lofreq-primer-rescue on` to require rescue and fail if `--primer-bed` is missing. The rescue thresholds can be adjusted with the `--lofreq-rescue-*` options.
+
+Example amplicon run with primer rescue:
+
+```bash
+vartracker end-to-end inputs.csv \
+  --primer-bed primers.bed \
+  --ampliconclip-tolerance 1 \
+  --outdir results/e2e_amplicon
+```
 
 ### Input Spreadsheets
 
@@ -234,6 +283,19 @@ Mode-specific expectations:
 - **BAM mode** requires `bam` and will fill `vcf` + `coverage` during the workflow.
 - **End-to-end mode** requires `reads1` (and optionally `reads2`); remaining fields are generated.
 
+The `bam` and `end-to-end` workflows also write two consensus FASTA columns to
+the updated Snakemake spreadsheet, plus the LoFreq rescue audit column:
+`consensus` for a simple consensus, `iupac_consensus` for an IUPAC-aware
+consensus, and `lofreq_rescued_tsv` for the per-sample primer-overlap rescue
+table. SNPs below
+`--consensus-snp-min-af` are ignored, SNPs from `--consensus-snp-min-af` up to
+`--consensus-snp-thresh` stay as reference bases in the simple consensus
+and become REF+ALT ambiguity codes in the IUPAC consensus, and SNPs at or above
+`--consensus-snp-thresh` become ALT bases. Indels are controlled
+separately by `--consensus-indel-thresh` in both consensus modes. Low-depth bases
+are masked as `N`, except for called deletion intervals so true deletions are not
+converted to low-depth masks.
+
 Relative paths are resolved with respect to the CSV location, so you can store the sheet alongside
 your sequencing artefacts. The `prepare spreadsheet` subcommand can scaffold a CSV and highlight missing files.
 
@@ -243,12 +305,103 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 
 ### Mode-specific options
 
-- `vartracker vcf` – accepts plotting and filtering options such as `--min-snv-freq`, `--min-indel-freq`,
-  `--allele-frequency-tag`, `--name`, `--outdir`, `--passage-cap`, `--manifest-level`, and literature controls
+- `vartracker vcf` – accepts core analysis options such as `--min-snv-freq`, `--min-indel-freq`,
+  `--allele-frequency-tag`, `--multiallelic-overflow`, `--name`, `--outdir`, `--sample-cap`, `--manifest-level`, and literature controls
   (`--search-pokay`, `--literature-csv`). Use `--test` to run the bundled smoke test.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
-  `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`, `--rulegraph`.
-- `vartracker end-to-end` – similar to `bam`, with an optional `--primer-bed` for amplicon clipping.
+  `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`,
+  `--rulegraph`, `--primer-bed`, `--lofreq-primer-rescue`, `--consensus-snp-min-af`,
+  `--consensus-snp-thresh`, and `--consensus-indel-thresh`.
+- `vartracker end-to-end` – similar to `bam`, with optional amplicon clipping controls:
+  `--primer-bed` and `--ampliconclip-tolerance` (default: `1`). Supplying
+  `--primer-bed` also enables LoFreq primer-overlap rescue by default.
+- `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV, including all heatmap customization filters.
+- `vartracker plot genome` – plot SNP positions along the genome or a selected gene region using all observed allele-frequency values for each variant.
+- `vartracker plot trajectory` – plot allele-frequency trajectories for a selected or auto-ranked subset of variants, optionally in takeover mode using threshold lines and threshold-based filtering.
+- `vartracker plot turnover` – plot new-versus-lost longitudinal turnover from the filtered result set.
+- `vartracker plot lifespan` – plot first-to-last detection spans for a selected or auto-ranked subset of variants.
+
+Consequence-calling note:
+- Vartracker keeps distinct ALT alleles at the same position separate during preprocessing, then rejoins them immediately before `bcftools csq` so codon-level consequences can still be inferred correctly.
+- If more than two ALT alleles remain present in a single sample at one genomic position after frequency filtering, vartracker defaults to stopping with an informative error before `bcftools csq`. This is the safest behavior and the default `--multiallelic-overflow error` mode.
+- `--multiallelic-overflow drop-lowest-af` continues by removing the lowest-frequency retained ALT allele(s) for the affected sample before `bcftools csq`, and prints a warning describing the site and the dropped allele(s).
+- `--multiallelic-overflow skip-site` continues by skipping consequence calling for the affected site entirely, leaving those variants in the results as unannotated rows and printing a warning describing the site.
+
+Heatmap filtering:
+- `vcf`, `bam`, and `end-to-end` always write the default heatmap. To customize heatmap content after a run, use `vartracker plot heatmap results.csv [options]`.
+- By default, all consequence classes are included except joint variants. Use `--include-joint` to show joint variants.
+- `--aa-exclude`: comma-separated `type_of_change` patterns to exclude. Wildcards are supported.
+- `--aa-include`: comma-separated `type_of_change` patterns to include.
+- `--only-persistent`: only include `new_persistent` variants.
+- `--only-new`: only include variants with `variant_status == new`.
+- `--gene-include` and `--gene-exclude`: comma-separated gene patterns.
+- `--variant-type`: comma-separated variant-type patterns such as `snp` or `indel`.
+- `--qc`: comma-separated `all_samples_pass_qc` patterns to include. Accepted values include `true`, `false`, `pass`, and `fail`.
+- `--min-prop-passing-qc`: minimum fraction of samples that must pass per-sample QC.
+- `--min-persistence`: minimum number of included samples in which the variant must be present.
+- `--min-max-af`: minimum maximum allele frequency across included samples.
+- `--min-sample-af`: minimum allele frequency that must be reached in at least one included sample.
+- `--sample-subset`: comma-separated sample-name patterns to plot.
+- `--hide-singletons`: hide variants present in only one included sample.
+- `--min-depth`: minimum site depth a variant must reach in at least one included sample.
+- `--x-labels sample-number`: label heatmap x-axis columns by `sample_number` instead of sample name.
+- `--title`: set the heatmap plot title. The default is `Variant allele frequencies`.
+- `--literature-csv`: include literature links in the interactive HTML heatmap using a literature hits CSV.
+- Example: `--aa-exclude "synonymous,*frameshift*,stop_gained"`
+
+Standalone plot filtering:
+- `--gene`, `--effect`, `--min-af`, `--max-af`: restrict the plotted result set before ranking/selection.
+- `--variants` or `--variant-file`: explicitly choose variants and preserve that order.
+- `--sample-min`, `--sample-max`: restrict the passage/sample-number window.
+- `--persistent-only` and `--new-only`: keep only persistent new variants or only variants with `variant_status == new`.
+- `trajectory` and `lifespan` auto-select a limited subset by default (`--top-n`) to stay readable.
+- `turnover` uses all filtered variants by default and is also written automatically during the main `vcf`/`bam`/`end-to-end` workflows as `variant_turnover_plot.pdf`.
+- `genome` uses SNPs only by default, keeps all observed allele-frequency values for each plotted variant, and writes `variant_genome_plot.pdf` during the main workflows.
+
+Standalone plot output:
+- `--out`: write to an exact file path.
+- `--outdir`: write beside the results CSV or into the chosen directory using deterministic names such as `variant_trajectory_plot.pdf` or `variant_genome_plot.pdf`.
+- `--format`: choose `pdf`, `png`, or `svg`.
+- `--dpi`: set raster output resolution.
+
+Genome plot options:
+- `--gene`: zoom to a single gene region.
+- `--aa-scale`: with `--gene`, use amino-acid coordinates on the x-axis.
+- `--cds-scale`: with `--gene`, use CDS-relative nucleotide coordinates on the x-axis.
+- `--focus-coords`: highlight nucleotide or amino-acid coordinate ranges, depending on the current x-axis mode. Separate color groups with `;`, ranges within a group with `,`, and optionally prefix a group with `Name:`.
+- `--focus-region-file`: read named focus region groups from a `.json`, `.csv`, or `.tsv` file for an inset legend.
+- `--show-intersections`: add a compact `Region | Variant` table below the genome plot for highlighted-region hits.
+- In the genome plot, undetected samples are rendered at the detection threshold rather than zero; by default this floor is `0.03`, or `--min-af` if supplied, and the dashed guide line follows that same threshold.
+- `--include-indels`: opt in to plotting indels too. This may be ambiguous or hard to interpret.
+- The standalone genome plot auto-discovers `reference_features.json` beside `results.csv`; workflow runs generate this sidecar automatically.
+
+Trajectory threshold mode:
+- `--thresholds`: draw horizontal AF threshold lines, e.g. `0.5,0.9`.
+- `--crossing-only`: keep only variants crossing at least one supplied threshold.
+- `--label-threshold-crossers`: label only threshold-crossing variants to reduce clutter.
+- `--crossing-rule`: choose whether threshold equality counts (`at_or_above`) or requires a strict exceedance (`strictly_above`).
+
+Standalone plot examples:
+- `vartracker plot genome results.csv`
+- `vartracker plot genome results.csv --gene F`
+- `vartracker plot genome results.csv --gene F --aa-scale`
+- `vartracker plot genome results.csv --gene F --cds-scale --focus-coords "184-210,586-630"`
+- `vartracker plot genome results.csv --focus-coords "150-300,900-1800"`
+- `vartracker plot genome results.csv --focus-coords "62-69,196-210;31-42,323-332,379-399;254-277"`
+- `vartracker plot genome results.csv --gene F --aa-scale --focus-coords "Ø:62-69,196-210;I:31-42,323-332,379-399;II:254-277"`
+- `vartracker plot genome results.csv --gene F --aa-scale --focus-coords "Ø:62-69,196-210;I:31-42,323-332,379-399" --show-intersections`
+- `vartracker plot genome results.csv --focus-region-file fusion_regions.json`
+- `vartracker plot genome results.csv --gene F --aa-scale --focus-coords "50-120,180-220"`
+- `vartracker plot turnover results.csv`
+- `vartracker plot trajectory results.csv --variants "S:D614G,S:E484K"`
+- `vartracker plot trajectory results.csv --thresholds 0.5,0.9`
+- `vartracker plot trajectory results.csv --thresholds 0.5,0.9 --crossing-only`
+- `vartracker plot trajectory results.csv --thresholds 0.5,0.9 --crossing-only --label-threshold-crossers`
+- `vartracker plot lifespan results.csv --top-n 20 --persistent-only`
+
+Note:
+- The standalone `plot` commands require `results.csv` files written by current vartracker versions, which now include a slash-separated `sample_number` column for stable passage ordering.
+
 - `vartracker prepare spreadsheet` – specify `--mode` (`vcf`, `bam`, or `e2e`), `--dir` to scan, `--out` for the CSV,
   and `--dry-run` to preview without writing a file.
 - `vartracker prepare reference` – build a merged FASTA/GFF3 bundle from GenBank nucleotide accessions.
@@ -356,6 +509,7 @@ vartracker produces several output files:
 
 - **results.csv**: Comprehensive variant analysis with all metrics
 - **results_metadata.json**: Output schema version and results metadata
+- **`<sample>_variants.rescued.tsv`** (`bam`/`end-to-end`): LoFreq primer-overlap rescue audit table, empty when rescue is disabled or no variants are rescued
 - **new_mutations.csv**: Mutations not present in the first sample
 - **persistent_new_mutations.csv**: New mutations that persist to the final sample
 - **cumulative_mutations.pdf**: Plot showing mutation accumulation over time
@@ -393,9 +547,9 @@ vartracker schema literature
 
 The pipeline performs the following analysis:
 
-1. **VCF Standardization**: Normalizes and standardizes input VCF files
-2. **Annotation**: Adds amino acid consequences using `bcftools csq`
-3. **Variant Merging**: Combines all longitudinal samples
+1. **VCF Standardization**: Normalizes and standardizes input VCF files, preserving distinct ALT alleles at the same genomic position
+2. **Variant Merging**: Combines all longitudinal samples
+3. **Annotation**: Adds amino acid consequences using `bcftools csq` on the merged VCF so sample-specific joint consequences are inferred from each sample's surviving ALT combination
 4. **Comprehensive Analysis**: For each variant, determines:
    - Gene location and amino acid consequences
    - Variant type (SNP/indel) and change type (synonymous/missense/etc.)
@@ -410,13 +564,11 @@ The pipeline performs the following analysis:
 ## Citation
 
 When using vartracker, please cite the software release you used. Citation metadata is provided
-in `CITATION.cff`, and GitHub releases are archived on Zenodo (DOI will appear here once minted).
+in `CITATION.cff`, and GitHub releases are archived on Zenodo.
 
-If you use vartracker, please cite the software record on Zenodo:
+- Foster, C. (2026). *vartracker* (Version 2.2.0). Zenodo. https://doi.org/10.5281/zenodo.18452274
 
-- Foster, C. (2026). *vartracker* (Version x.y.z). Zenodo. https://doi.org/10.5281/zenodo.XXXXX
-- Concept DOI (all versions): https://doi.org/10.5281/zenodo.18452274
-Note: a version-specific DOI is minted by Zenodo after each GitHub release.
+Note: the DOI above is the Zenodo concept DOI for all versions; a version-specific DOI is minted by Zenodo after each GitHub release.
 
 Also cite relevant methods or data sources, for example:
 
