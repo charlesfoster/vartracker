@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO, cast
 
-
 RESCUE_FILTER = (
     '##FILTER=<ID=RESCUED_PRIMER_OVERLAP,Description="Variant failed default LoFreq '
     'filtering but was retained by primer-overlap near-fixed rescue rule">'
