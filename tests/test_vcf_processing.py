@@ -61,11 +61,46 @@ def _write_minimal_reference_bundle(tmp_path: Path) -> tuple[Path, Path]:
     return ref, gff
 
 
+def _prepare_merged_multiallelic_vcf(
+    tmp_path: Path, record_line: str, sample_name: str = "s1"
+) -> tuple[Path, Path, Path]:
+    ref, gff = _write_minimal_reference_bundle(tmp_path)
+    sample_vcf = tmp_path / f"{sample_name}.vcf"
+    sample_vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1,length=9>\n"
+        '##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Raw Depth">\n'
+        '##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        f"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{sample_name}\n"
+        f"{record_line}\n",
+        encoding="utf-8",
+    )
+
+    formatted_vcf, _ = format_vcf(
+        str(sample_vcf),
+        sample_name,
+        str(tmp_path),
+        0.0,
+        0.0,
+        str(ref),
+        str(gff),
+        False,
+    )
+
+    vcf_list = tmp_path / "vcf_list.txt"
+    vcf_list.write_text(f"{formatted_vcf}\n", encoding="utf-8")
+    sample_names = tmp_path / "sample_names.txt"
+    sample_names.write_text(f"{sample_name}\n", encoding="utf-8")
+
+    merged_vcf = tmp_path / "merged.vcf"
+    merge_consequences(str(tmp_path), str(merged_vcf), str(sample_names), debug=False)
+    return ref, gff, merged_vcf
+
+
 @pytest.mark.skipif(shutil.which("bcftools") is None, reason="bcftools not available")
-@pytest.mark.xfail(
-    strict=True,
-    reason="format_vcf currently deduplicates records by POS and can drop a real ALT allele",
-)
 def test_format_vcf_preserves_distinct_alt_records_at_same_position(tmp_path):
     ref, gff = _write_minimal_reference_bundle(tmp_path)
     vcf_path = tmp_path / "same_pos_two_alts.vcf"
@@ -98,6 +133,214 @@ def test_format_vcf_preserves_distinct_alt_records_at_same_position(tmp_path):
 
     assert len(records) == 2
     assert {record.ALT[0] for record in records} == {"C", "G"}
+
+
+@pytest.mark.skipif(shutil.which("bcftools") is None, reason="bcftools not available")
+def test_multiallelic_input_survives_merge_and_csq_annotation(tmp_path):
+    ref, gff = _write_minimal_reference_bundle(tmp_path)
+    sample_vcf = tmp_path / "multiallelic.vcf"
+    sample_vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1,length=9>\n"
+        '##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Raw Depth">\n'
+        '##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n"
+        "chr1\t5\t.\tA\tC,G\t.\tPASS\tAF=0.20,0.30;DP=100\tGT:DP:AF\t1/2:100:0.20,0.30\n",
+        encoding="utf-8",
+    )
+
+    formatted_vcf, _ = format_vcf(
+        str(sample_vcf),
+        "s1",
+        str(tmp_path),
+        0.0,
+        0.0,
+        str(ref),
+        str(gff),
+        False,
+    )
+
+    vcf_list = tmp_path / "vcf_list.txt"
+    vcf_list.write_text(f"{formatted_vcf}\n", encoding="utf-8")
+    sample_names = tmp_path / "sample_names.txt"
+    sample_names.write_text("s1\n", encoding="utf-8")
+
+    merged_vcf = tmp_path / "merged.vcf"
+    merge_consequences(str(tmp_path), str(merged_vcf), str(sample_names), debug=False)
+
+    annotated_vcf = tmp_path / "annotated.vcf"
+    annotate_vcf(
+        str(merged_vcf),
+        str(annotated_vcf),
+        str(ref),
+        str(gff),
+        debug=False,
+    )
+
+    depth = tmp_path / "s1.depth.txt"
+    _write_depth_file(depth)
+
+    table = process_vcf(str(annotated_vcf), [str(depth)], 10, ["s1"])
+
+    observed = (
+        table[["variant", "amino_acid_consequence", "bcsq_aa_notation", "alt_freq"]]
+        .sort_values("variant")
+        .reset_index(drop=True)
+    )
+
+    expected = pd.DataFrame(
+        [
+            {
+                "variant": "A5C",
+                "amino_acid_consequence": "K2T",
+                "bcsq_aa_notation": "2K>2T",
+                "alt_freq": "0.200",
+            },
+            {
+                "variant": "A5G",
+                "amino_acid_consequence": "K2R",
+                "bcsq_aa_notation": "2K>2R",
+                "alt_freq": "0.300",
+            },
+        ]
+    )
+
+    pd.testing.assert_frame_equal(observed, expected)
+
+
+@pytest.mark.skipif(shutil.which("bcftools") is None, reason="bcftools not available")
+def test_annotate_vcf_reports_informative_error_for_multiallelic_overflow(tmp_path):
+    ref, gff, merged_vcf = _prepare_merged_multiallelic_vcf(
+        tmp_path,
+        "chr1\t5\t.\tA\tG,T,C\t.\tPASS\tAF=0.04,0.34,0.12;DP=100\tGT:DP:AF\t1/2:100:0.04,0.34,0.12",
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        annotate_vcf(
+            str(merged_vcf),
+            str(tmp_path / "annotated.vcf"),
+            str(ref),
+            str(gff),
+            debug=False,
+            multiallelic_overflow="error",
+        )
+
+    message = str(excinfo.value)
+    assert "chr1:5" in message
+    assert "Sample s1:" in message
+    assert "A>G AF=0.040" in message
+    assert "A>T AF=0.340" in message
+    assert "A>C AF=0.120" in message
+    assert "--min-snv-freq above 0.040" in message
+
+
+@pytest.mark.skipif(shutil.which("bcftools") is None, reason="bcftools not available")
+def test_annotate_vcf_drop_lowest_af_continues_with_warning(tmp_path, capsys):
+    ref, gff, merged_vcf = _prepare_merged_multiallelic_vcf(
+        tmp_path,
+        "chr1\t5\t.\tA\tG,T,C\t.\tPASS\tAF=0.04,0.34,0.12;DP=100\tGT:DP:AF\t1/2:100:0.04,0.34,0.12",
+    )
+
+    annotated_vcf = tmp_path / "annotated.vcf"
+    annotate_vcf(
+        str(merged_vcf),
+        str(annotated_vcf),
+        str(ref),
+        str(gff),
+        debug=False,
+        multiallelic_overflow="drop-lowest-af",
+    )
+
+    stdout = capsys.readouterr().out
+    assert "Warning:" in stdout
+    assert "Dropping the lowest-frequency ALT allele(s) for this sample" in stdout
+    assert "A>G AF=0.040" in stdout
+    assert "--min-snv-freq above 0.040" in stdout
+
+    depth = tmp_path / "s1.depth.txt"
+    _write_depth_file(depth)
+    table = process_vcf(str(annotated_vcf), [str(depth)], 10, ["s1"])
+
+    observed = (
+        table[["variant", "amino_acid_consequence", "alt_freq"]]
+        .sort_values("variant")
+        .reset_index(drop=True)
+    )
+
+    expected = pd.DataFrame(
+        [
+            {
+                "variant": "A5C",
+                "amino_acid_consequence": "K2T",
+                "alt_freq": "0.120",
+            },
+            {
+                "variant": "A5T",
+                "amino_acid_consequence": "K2I",
+                "alt_freq": "0.340",
+            },
+        ]
+    )
+
+    pd.testing.assert_frame_equal(observed, expected)
+
+
+@pytest.mark.skipif(shutil.which("bcftools") is None, reason="bcftools not available")
+def test_annotate_vcf_skip_site_keeps_unannotated_rows(tmp_path, capsys):
+    ref, gff, merged_vcf = _prepare_merged_multiallelic_vcf(
+        tmp_path,
+        "chr1\t5\t.\tA\tG,T,C\t.\tPASS\tAF=0.04,0.34,0.12;DP=100\tGT:DP:AF\t1/2:100:0.04,0.34,0.12",
+    )
+
+    annotated_vcf = tmp_path / "annotated.vcf"
+    annotate_vcf(
+        str(merged_vcf),
+        str(annotated_vcf),
+        str(ref),
+        str(gff),
+        debug=False,
+        multiallelic_overflow="skip-site",
+    )
+
+    stdout = capsys.readouterr().out
+    assert "Warning:" in stdout
+    assert "Skipping consequence calling for this site" in stdout
+    assert "--min-snv-freq above 0.040" in stdout
+
+    depth = tmp_path / "s1.depth.txt"
+    _write_depth_file(depth)
+    table = process_vcf(str(annotated_vcf), [str(depth)], 10, ["s1"])
+
+    observed = (
+        table[["variant", "amino_acid_consequence", "alt_freq"]]
+        .sort_values("variant")
+        .reset_index(drop=True)
+    )
+
+    expected = pd.DataFrame(
+        [
+            {
+                "variant": "A5C",
+                "amino_acid_consequence": "None",
+                "alt_freq": "0.120",
+            },
+            {
+                "variant": "A5G",
+                "amino_acid_consequence": "None",
+                "alt_freq": "0.040",
+            },
+            {
+                "variant": "A5T",
+                "amino_acid_consequence": "None",
+                "alt_freq": "0.340",
+            },
+        ]
+    )
+
+    pd.testing.assert_frame_equal(observed, expected)
 
 
 def test_process_vcf_splits_sample_specific_bcsq_annotations(tmp_path):

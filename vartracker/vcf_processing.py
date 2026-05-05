@@ -8,7 +8,9 @@ import os
 import re
 import subprocess
 import gzip
+import shutil
 from pathlib import Path
+from typing import TypedDict
 
 import pandas as pd
 import numpy as np
@@ -17,6 +19,12 @@ from itertools import dropwhile
 
 from .constants import reformat_csq_notation
 from .amino_acids import AminoAcidChange
+
+
+class _AltEntry(TypedDict):
+    index: int
+    alt: str
+    af: float
 
 
 def _open_vcf(path: str, mode: str):
@@ -140,6 +148,48 @@ def _normalize_header_line(line: str) -> str:
     return line
 
 
+def _run_logged_command(cmd: str, log_file: str, context: str) -> None:
+    """Run a shell command and surface the tail of the log on failure."""
+
+    try:
+        with open(log_file, "a", encoding="utf-8") as err:
+            subprocess.run(cmd, shell=True, stderr=err, check=True)
+    except subprocess.CalledProcessError as exc:
+        log_tail = ""
+        if os.path.exists(log_file):
+            try:
+                with open(
+                    log_file, "r", encoding="utf-8", errors="replace"
+                ) as err_file:
+                    tail_lines = err_file.readlines()[-20:]
+                    log_tail = "".join(tail_lines).strip()
+            except OSError:
+                log_tail = "<unable to read bcftools log>"
+
+        details = log_tail if log_tail else exc.stderr or ""
+        message = (
+            f"{context} failed with exit status {exc.returncode} for command '{cmd}'."
+        )
+        if details:
+            message = f"{message}\nLast bcftools log lines:\n{details}"
+        raise RuntimeError(message) from exc
+
+
+def _split_multiallelic_records(
+    vcf_path: str, tempdir: str, sample: str, log_file: str, debug: bool = False
+) -> str:
+    """Split multi-ALT records so downstream processing can track each allele."""
+
+    split_path = os.path.join(tempdir, f"{Path(vcf_path).stem}.{sample}.split.vcf")
+    cmd = f"bcftools norm -m -any -Ov -o {split_path} {vcf_path}"
+    _run_logged_command(cmd, log_file, "bcftools norm")
+
+    if debug:
+        print(f"Command: {cmd}")
+
+    return split_path
+
+
 def rindex(lst, item):
     """Find the last occurrence of an item in a list."""
 
@@ -182,8 +232,11 @@ def format_vcf(
 
     try:
         prepared_vcf = _ensure_format_and_sample(vcf, sample, tempdir, debug)
+        split_vcf = _split_multiallelic_records(
+            prepared_vcf, tempdir, sample, log, debug
+        )
 
-        vcf_mod = VCF(prepared_vcf, strict_gt=True)
+        vcf_mod = VCF(split_vcf, strict_gt=True)
         existing_samples = list(vcf_mod.samples)
         sample_count = len(existing_samples) if existing_samples else 1
 
@@ -261,7 +314,10 @@ def format_vcf(
             return value
 
         for v in vcf_mod:
-            pos_key = str(v.POS)
+            if not v.ALT:
+                continue
+
+            variant_key = (v.CHROM, int(v.POS), v.REF, v.ALT[0])
 
             # Get allele frequency from the specified tag
             if allele_frequency_tag != "AF":
@@ -285,9 +341,9 @@ def format_vcf(
                         round(x, 6) if isinstance(x, float) else x for x in af_value
                     ]
 
-            if pos_key in variants:
-                if variants[pos_key].INFO["AF"] < v.INFO["AF"]:
-                    del variants[pos_key]
+            if variant_key in variants:
+                if variants[variant_key].INFO["AF"] < v.INFO["AF"]:
+                    del variants[variant_key]
                 else:
                     continue
 
@@ -308,7 +364,7 @@ def format_vcf(
             v.set_format("DP", np.array(dp_array, dtype=int))
             v.set_format("AF", np.array(af_array, dtype=float))
             v.genotypes = [[1, True] for _ in range(sample_count)]
-            variants[pos_key] = v
+            variants[variant_key] = v
 
         for variant in variants.values():
             w.write_record(variant)
@@ -327,30 +383,8 @@ def format_vcf(
             f"-Oz -o {out}"
         )
 
-        try:
-            with open(log, "a", encoding="utf-8") as err:
-                subprocess.run(cmd, shell=True, stderr=err, check=True)
-                subprocess.run(
-                    f"bcftools index -f {out}",
-                    shell=True,
-                    stderr=err,
-                    check=True,
-                )
-        except subprocess.CalledProcessError as exc:
-            log_tail = ""
-            if os.path.exists(log):
-                try:
-                    with open(log, "r", encoding="utf-8", errors="replace") as err_file:
-                        tail_lines = err_file.readlines()[-20:]
-                        log_tail = "".join(tail_lines).strip()
-                except OSError:
-                    log_tail = "<unable to read bcftools log>"
-
-            details = log_tail if log_tail else exc.stderr or ""
-            message = f"Command '{cmd}' returned non-zero exit status {exc.returncode}."
-            if details:
-                message = f"{message}\nLast bcftools log lines:\n{details}"
-            raise RuntimeError(message) from exc
+        _run_logged_command(cmd, log, "bcftools view filter")
+        _run_logged_command(f"bcftools index -f {out}", log, "bcftools index")
 
         if debug:
             print(f"Command: {cmd}")
@@ -402,11 +436,263 @@ def merge_consequences(tempdir, csq_file, sample_names, debug):
         raise RuntimeError(f"Error merging VCF files: {str(e)}")
 
 
-def annotate_vcf(vcf_file, output_file, reference, annotation, debug):
+def _variant_threshold_flag(v) -> str:
+    ref = str(v.REF or "")
+    alts = [str(alt) for alt in (v.ALT or [])]
+    is_indel = any(len(alt) != len(ref) for alt in alts)
+    return "--min-indel-freq" if is_indel else "--min-snv-freq"
+
+
+def _normalise_af_row(sample_values, alt_count: int) -> list[float]:
+    values = np.atleast_1d(sample_values).tolist()
+    if len(values) < alt_count:
+        values.extend([np.nan] * (alt_count - len(values)))
+    return values[:alt_count]
+
+
+def _present_alt_entries(v, sample_values) -> list[_AltEntry]:
+    entries: list[_AltEntry] = []
+    values = _normalise_af_row(sample_values, len(v.ALT or []))
+    for alt_index, raw_value in enumerate(values, start=1):
+        try:
+            numeric_value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if np.isnan(numeric_value) or numeric_value <= 0:
+            continue
+        alt = str(v.ALT[alt_index - 1])
+        entries.append({"index": alt_index, "alt": alt, "af": numeric_value})
+    return entries
+
+
+def _describe_alt_entries(v, entries: list[_AltEntry]) -> str:
+    if not entries:
+        return "None"
+    ref = str(v.REF or "")
+    return ", ".join(f"{ref}>{entry['alt']} AF={entry['af']:.3f}" for entry in entries)
+
+
+def _build_overflow_events(v, sample_names, af_matrix) -> list[dict[str, object]]:
+    events = []
+    for sample_name, sample_values in zip(sample_names, af_matrix.tolist()):
+        present_entries = _present_alt_entries(v, sample_values)
+        if len(present_entries) <= 2:
+            continue
+
+        sorted_entries = sorted(
+            present_entries, key=lambda entry: (entry["af"], entry["index"])
+        )
+        drop_count = len(sorted_entries) - 2
+        dropped_entries = sorted_entries[:drop_count]
+        kept_entries = sorted_entries[drop_count:]
+        threshold_suggestion = max(float(entry["af"]) for entry in dropped_entries)
+
+        events.append(
+            {
+                "sample": sample_name,
+                "present": present_entries,
+                "dropped": dropped_entries,
+                "kept": kept_entries,
+                "suggestion": threshold_suggestion,
+            }
+        )
+
+    return events
+
+
+def _format_overflow_message(v, overflow_events, *, action: str) -> str:
+    threshold_flag = _variant_threshold_flag(v)
+    location = f"{v.CHROM}:{v.POS}"
+
+    lines = [
+        f"bcftools csq input preparation found more than two ALT alleles present at {location}.",
+        f"Action: {action}.",
+    ]
+    for event in overflow_events:
+        lines.append(f"Sample {event['sample']}:")
+        lines.append(
+            f"Retained ALT alleles after filtering: {_describe_alt_entries(v, event['present'])}."
+        )
+        lines.append(
+            f"To avoid this at the current site, increase {threshold_flag} above {event['suggestion']:.3f}."
+        )
+        if event["dropped"]:
+            lines.append(
+                f"Lowest-frequency ALT alleles affected: {_describe_alt_entries(v, event['dropped'])}."
+            )
+    lines.append("bcftools csq can represent at most two ALT alleles per sample/site.")
+    return "\n".join(lines)
+
+
+def _vcf_record_sort_key(line: str) -> tuple[str, int, str, str]:
+    fields = line.rstrip("\n").split("\t")
+    chrom = fields[0] if len(fields) > 0 else ""
+    try:
+        pos = int(fields[1]) if len(fields) > 1 else 0
+    except ValueError:
+        pos = 0
+    ref = fields[3] if len(fields) > 3 else ""
+    alt = fields[4] if len(fields) > 4 else ""
+    return chrom, pos, ref, alt
+
+
+def _merge_vcf_outputs(primary_vcf: str, secondary_vcf: str, output_file: str) -> None:
+    with open(primary_vcf, "r", encoding="utf-8") as primary_handle:
+        primary_lines = primary_handle.readlines()
+    with open(secondary_vcf, "r", encoding="utf-8") as secondary_handle:
+        secondary_lines = secondary_handle.readlines()
+
+    header_lines = [line for line in primary_lines if line.startswith("#")]
+    record_lines = [
+        line for line in primary_lines if line.strip() and not line.startswith("#")
+    ]
+    record_lines.extend(
+        line for line in secondary_lines if line.strip() and not line.startswith("#")
+    )
+    record_lines.sort(key=_vcf_record_sort_key)
+
+    with open(output_file, "w", encoding="utf-8") as out_handle:
+        out_handle.writelines(header_lines)
+        out_handle.writelines(record_lines)
+
+
+def annotate_vcf(
+    vcf_file,
+    output_file,
+    reference,
+    annotation,
+    debug,
+    multiallelic_overflow="error",
+):
     """Annotate a merged multi-sample VCF with bcftools csq."""
+    if multiallelic_overflow not in {"error", "drop-lowest-af", "skip-site"}:
+        raise RuntimeError(
+            "multiallelic_overflow must be one of: error, drop-lowest-af, skip-site"
+        )
+
+    output_dir = os.path.dirname(output_file) or "."
+    prefix = Path(output_file).stem
+    joined_vcf = os.path.join(output_dir, f"{prefix}.joined_for_csq.vcf")
+    prepared_vcf = os.path.join(output_dir, f"{prefix}.prepared_for_csq.vcf")
+    skipped_vcf = os.path.join(output_dir, f"{prefix}.skipped_from_csq.vcf")
+    annotated_only_vcf = os.path.join(output_dir, f"{prefix}.annotated_only.vcf")
+
+    join_cmd = f"bcftools norm -m +any -Ov -o {joined_vcf} {vcf_file}"
+    if debug:
+        print(f"Command: {join_cmd}")
+    try:
+        subprocess.run(join_cmd, shell=True, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Error preparing merged VCF for bcftools csq with multiallelic joins: {str(e)}"
+        )
+
+    joined = VCF(joined_vcf, strict_gt=True)
+    sample_names = list(joined.samples)
+    writer = Writer.from_string(prepared_vcf, joined.raw_header, mode="w")
+    skipped_writer = Writer.from_string(skipped_vcf, joined.raw_header, mode="w")
+    records_for_csq = 0
+    skipped_records = 0
+
+    try:
+        for variant in joined:
+            try:
+                af_matrix = variant.format("AF")
+            except (KeyError, AttributeError, ValueError, RuntimeError):
+                af_matrix = None
+
+            if af_matrix is None:
+                writer.write_record(variant)
+                records_for_csq += 1
+                continue
+
+            overflow_events = _build_overflow_events(variant, sample_names, af_matrix)
+            if overflow_events and multiallelic_overflow == "error":
+                raise RuntimeError(
+                    _format_overflow_message(
+                        variant,
+                        overflow_events,
+                        action="Stopping analysis before bcftools csq",
+                    )
+                )
+
+            if overflow_events and multiallelic_overflow == "skip-site":
+                print(
+                    "Warning: "
+                    + _format_overflow_message(
+                        variant,
+                        overflow_events,
+                        action="Skipping consequence calling for this site",
+                    )
+                )
+                skipped_writer.write_record(variant)
+                skipped_records += 1
+                continue
+
+            updated_af_rows = []
+            genotypes = []
+            for sample_name, sample_values in zip(sample_names, af_matrix.tolist()):
+                row_values = _normalise_af_row(sample_values, len(variant.ALT or []))
+                present_entries = _present_alt_entries(variant, row_values)
+
+                if len(present_entries) > 2:
+                    sorted_entries = sorted(
+                        present_entries,
+                        key=lambda entry: (entry["af"], entry["index"]),
+                    )
+                    dropped_entries = sorted_entries[: len(sorted_entries) - 2]
+                    kept_entries = sorted_entries[len(sorted_entries) - 2 :]
+                    dropped_indices = {entry["index"] for entry in dropped_entries}
+
+                    for alt_index in dropped_indices:
+                        row_values[alt_index - 1] = np.nan
+
+                    print(
+                        "Warning: "
+                        + _format_overflow_message(
+                            variant,
+                            [
+                                {
+                                    "sample": sample_name,
+                                    "present": present_entries,
+                                    "dropped": dropped_entries,
+                                    "kept": kept_entries,
+                                    "suggestion": max(
+                                        float(entry["af"]) for entry in dropped_entries
+                                    ),
+                                }
+                            ],
+                            action="Dropping the lowest-frequency ALT allele(s) for this sample",
+                        )
+                    )
+                    present = sorted(entry["index"] for entry in kept_entries)
+                else:
+                    present = sorted(entry["index"] for entry in present_entries)
+
+                updated_af_rows.append(row_values)
+                if not present:
+                    genotypes.append([0, 0, False])
+                elif len(present) == 1:
+                    genotypes.append([present[0], present[0], False])
+                else:
+                    genotypes.append([present[0], present[1], False])
+
+            variant.set_format("AF", np.asarray(updated_af_rows, dtype=float))
+            variant.genotypes = genotypes
+            writer.write_record(variant)
+            records_for_csq += 1
+    finally:
+        writer.close()
+        skipped_writer.close()
+        joined.close()
+
+    if records_for_csq == 0:
+        shutil.copyfile(skipped_vcf, output_file)
+        return
+
     cmd = (
-        f"bcftools csq -f {reference} -g {annotation} --force "
-        f"-Ov -o {output_file} {vcf_file}"
+        f"bcftools csq -p R -f {reference} -g {annotation} --force "
+        f"-Ov -o {annotated_only_vcf} {prepared_vcf}"
     )
 
     if debug:
@@ -416,6 +702,11 @@ def annotate_vcf(vcf_file, output_file, reference, annotation, debug):
         subprocess.run(cmd, shell=True, check=True)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Error annotating merged VCF with bcftools csq: {str(e)}")
+
+    if skipped_records:
+        _merge_vcf_outputs(annotated_only_vcf, skipped_vcf, output_file)
+    else:
+        shutil.copyfile(annotated_only_vcf, output_file)
 
 
 def calculate_variant_site_depths(cov_df, v, samples, min_depth: int):
@@ -597,6 +888,98 @@ def _mask_allele_frequencies_for_annotation(
     return masked
 
 
+def _format_frequency_token(value) -> str:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "."
+    if np.isnan(numeric):
+        return "."
+    return "{:.3f}".format(numeric)
+
+
+def _extract_alt_frequency_map(v, samples):
+    """Return per-ALT allele-frequency trajectories for a VCF record."""
+
+    alt_map = {str(alt): ["."] * len(samples) for alt in (v.ALT or [])}
+    if not alt_map:
+        return alt_map
+
+    try:
+        allele_freq_arrays = v.format("AF")
+    except (KeyError, AttributeError, ValueError, RuntimeError):
+        allele_freq_arrays = None
+
+    if allele_freq_arrays is not None:
+        for sample_index, sample_values in enumerate(allele_freq_arrays.tolist()):
+            values = np.atleast_1d(sample_values).tolist()
+            for alt_index, alt in enumerate(v.ALT):
+                raw_value = values[alt_index] if alt_index < len(values) else None
+                alt_map[str(alt)][sample_index] = _format_frequency_token(raw_value)
+        return alt_map
+
+    info_af = v.INFO.get("AF") or v.INFO.get("VAF")
+    if isinstance(info_af, (list, tuple)):
+        values = list(info_af)
+    elif info_af is None:
+        values = []
+    else:
+        values = [info_af]
+
+    for alt_index, alt in enumerate(v.ALT):
+        raw_value = values[alt_index] if alt_index < len(values) else None
+        token = _format_frequency_token(raw_value)
+        alt_map[str(alt)] = [token] * len(samples)
+
+    return alt_map
+
+
+def _collapse_alt_frequency_map(alt_frequency_map, sample_count: int):
+    """Collapse per-ALT frequencies into a site-level trajectory using max AF."""
+
+    collapsed = []
+    for sample_index in range(sample_count):
+        observed = []
+        for allele_freqs in alt_frequency_map.values():
+            if sample_index >= len(allele_freqs):
+                continue
+            token = allele_freqs[sample_index]
+            if token == ".":
+                continue
+            try:
+                observed.append(float(token))
+            except (TypeError, ValueError):
+                continue
+        collapsed.append("{:.3f}".format(max(observed)) if observed else ".")
+    return collapsed
+
+
+def _annotation_alt_for_record(v, anno):
+    """Infer which ALT allele a BCSQ annotation belongs to for the current record."""
+
+    if not v.ALT:
+        return None
+    if len(v.ALT) == 1:
+        return str(v.ALT[0])
+    if len(anno) <= 6:
+        return None
+
+    dna_change = str(anno[6] or "").strip()
+    if not dna_change:
+        return None
+
+    for token in dna_change.split("+"):
+        match = re.match(r"^(\d+)([^>]+)>([^>]+)$", token.strip())
+        if not match:
+            continue
+        pos = int(match.group(1))
+        alt = match.group(3)
+        if pos == int(v.POS) and alt in v.ALT:
+            return alt
+
+    return None
+
+
 def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
     """
     Process VCF file and extract variant information.
@@ -646,38 +1029,10 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
     # Process variants
     for v in vcf:
         info = dict(list(v.INFO))
-        try:
-            allele_freq_arrays = v.format("AF").tolist()
-        except (KeyError, AttributeError, ValueError, RuntimeError):
-            allele_freq_arrays = None
-
-        if allele_freq_arrays:
-            allele_freqs = [
-                "{:.3f}".format(x[0]).replace("nan", ".") for x in allele_freq_arrays
-            ]
-        else:
-            info_af = v.INFO.get("AF") or v.INFO.get("VAF")
-            if isinstance(info_af, (list, tuple)):
-                values = list(info_af)
-            elif info_af is None:
-                values = [None] * len(samples)
-            else:
-                values = [info_af]
-            if not values:
-                values = [None]
-            if len(values) < len(samples):
-                values.extend([values[-1]] * (len(samples) - len(values)))
-            allele_freqs = []
-            for val in values[: len(samples)]:
-                if val is None:
-                    allele_freqs.append(".")
-                    continue
-                try:
-                    allele_freqs.append("{:.3f}".format(float(val)))
-                except (TypeError, ValueError):
-                    allele_freqs.append(".")
-            if not allele_freqs:
-                allele_freqs = ["."] * max(1, len(samples))
+        alt_frequency_map = _extract_alt_frequency_map(v, samples)
+        allele_freqs = _collapse_alt_frequency_map(alt_frequency_map, len(samples))
+        if not allele_freqs:
+            allele_freqs = ["."] * max(1, len(samples))
         trajectory = _summarise_sample_trajectory(allele_freqs, samples)
 
         depths_qc = calculate_variant_site_depths(cov_df, v, samples, min_depth)
@@ -697,8 +1052,15 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
 
             if sample_bcsq_map:
                 for annot in annotations:
+                    anno = annot.split("|")
+                    annotation_alt = _annotation_alt_for_record(v, anno)
+                    annotation_allele_freqs = (
+                        alt_frequency_map.get(annotation_alt, allele_freqs)
+                        if annotation_alt is not None
+                        else allele_freqs
+                    )
                     masked_allele_freqs = _mask_allele_frequencies_for_annotation(
-                        annot, allele_freqs, samples, sample_bcsq_map
+                        annot, annotation_allele_freqs, samples, sample_bcsq_map
                     )
                     masked_trajectory = _summarise_sample_trajectory(
                         masked_allele_freqs, samples
@@ -706,7 +1068,6 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
                     if "Y" not in masked_trajectory["presence_absence"]:
                         continue
 
-                    anno = annot.split("|")
                     result = _process_annotation(
                         v,
                         anno,
@@ -721,6 +1082,7 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
                         masked_allele_freqs,
                         samples,
                         total_cov_list,
+                        annotation_alt,
                     )
                     results.append(result)
                     produced_annotation_specific_row = True
@@ -728,39 +1090,73 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
             if not produced_annotation_specific_row:
                 for annot in annotations:
                     anno = annot.split("|")
+                    annotation_alt = _annotation_alt_for_record(v, anno)
+                    annotation_allele_freqs = (
+                        alt_frequency_map.get(annotation_alt, allele_freqs)
+                        if annotation_alt is not None
+                        else allele_freqs
+                    )
+                    annotation_trajectory = _summarise_sample_trajectory(
+                        annotation_allele_freqs, samples
+                    )
                     result = _process_annotation(
                         v,
                         anno,
-                        trajectory["variant_status"],
-                        trajectory["persistent_status"],
-                        trajectory["presence_absence"],
-                        trajectory["first_appearance"],
-                        trajectory["last_appearance"],
+                        annotation_trajectory["variant_status"],
+                        annotation_trajectory["persistent_status"],
+                        annotation_trajectory["presence_absence"],
+                        annotation_trajectory["first_appearance"],
+                        annotation_trajectory["last_appearance"],
                         all_samples_pass_qc,
                         proportion_samples_passing_qc,
                         depths_qc,
-                        allele_freqs,
+                        annotation_allele_freqs,
                         samples,
                         total_cov_list,
+                        annotation_alt,
                     )
                     results.append(result)
         else:
             # Handle variants without annotations
-            result = _create_unannotated_result(
-                v,
-                trajectory["variant_status"],
-                trajectory["persistent_status"],
-                trajectory["presence_absence"],
-                trajectory["first_appearance"],
-                trajectory["last_appearance"],
-                all_samples_pass_qc,
-                proportion_samples_passing_qc,
-                depths_qc,
-                allele_freqs,
-                samples,
-                total_cov_list,
-            )
-            results.append(result)
+            if len(alt_frequency_map) > 1:
+                for alt, alt_allele_freqs in alt_frequency_map.items():
+                    alt_trajectory = _summarise_sample_trajectory(
+                        alt_allele_freqs, samples
+                    )
+                    if "Y" not in alt_trajectory["presence_absence"]:
+                        continue
+                    result = _create_unannotated_result(
+                        v,
+                        alt_trajectory["variant_status"],
+                        alt_trajectory["persistent_status"],
+                        alt_trajectory["presence_absence"],
+                        alt_trajectory["first_appearance"],
+                        alt_trajectory["last_appearance"],
+                        all_samples_pass_qc,
+                        proportion_samples_passing_qc,
+                        depths_qc,
+                        alt_allele_freqs,
+                        samples,
+                        total_cov_list,
+                        alt,
+                    )
+                    results.append(result)
+            else:
+                result = _create_unannotated_result(
+                    v,
+                    trajectory["variant_status"],
+                    trajectory["persistent_status"],
+                    trajectory["presence_absence"],
+                    trajectory["first_appearance"],
+                    trajectory["last_appearance"],
+                    all_samples_pass_qc,
+                    proportion_samples_passing_qc,
+                    depths_qc,
+                    allele_freqs,
+                    samples,
+                    total_cov_list,
+                )
+                results.append(result)
 
     return pd.DataFrame(results)
 
@@ -779,8 +1175,10 @@ def _process_annotation(
     allele_freqs,
     samples,
     total_cov_list,
+    alt_allele=None,
 ):
     """Process a single annotation from bcftools csq."""
+    selected_alt = alt_allele or (v.ALT[0] if v.ALT else "")
     if len(anno) == 1 and anno[0].startswith("@"):
         # Joint variant annotation
         return {
@@ -789,8 +1187,8 @@ def _process_annotation(
             "end": v.end,
             "gene": anno[0],
             "ref": v.REF,
-            "alt": v.ALT[0],
-            "variant": v.REF + str(v.POS) + v.ALT[0],
+            "alt": selected_alt,
+            "variant": v.REF + str(v.POS) + selected_alt,
             "amino_acid_consequence": anno[0],
             "nsp_aa_change": anno[0],
             "bcsq_nt_notation": anno[0],
@@ -835,8 +1233,8 @@ def _process_annotation(
             "end": v.end,
             "gene": anno[1],
             "ref": v.REF,
-            "alt": v.ALT[0],
-            "variant": v.REF + str(v.POS) + v.ALT[0],
+            "alt": selected_alt,
+            "variant": v.REF + str(v.POS) + selected_alt,
             "amino_acid_consequence": reformatted_aa[0],
             "nsp_aa_change": reformatted_aa[1],
             "bcsq_nt_notation": anno[6] if len(anno) > 5 else "",
@@ -880,8 +1278,10 @@ def _create_unannotated_result(
     allele_freqs,
     samples,
     total_cov_list,
+    alt_allele=None,
 ):
     """Create result for variants without annotations."""
+    selected_alt = alt_allele or (v.ALT[0] if v.ALT else "")
     if v.start + 1 < 266:
         gene = "5' UTR"
     elif v.start + 1 > 29674:
@@ -895,8 +1295,8 @@ def _create_unannotated_result(
         "end": v.end,
         "gene": gene,
         "ref": v.REF,
-        "alt": v.ALT[0],
-        "variant": v.REF + str(v.POS) + v.ALT[0],
+        "alt": selected_alt,
+        "variant": v.REF + str(v.POS) + selected_alt,
         "amino_acid_consequence": "None",
         "nsp_aa_change": "None",
         "bcsq_nt_notation": "None",

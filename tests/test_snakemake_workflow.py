@@ -31,8 +31,14 @@ def test_snakemake_rules_write_logs_under_outdir():
     assert "bedtools" not in snakefile
     assert "--both-ends" not in snakefile
     assert "--tolerance {params.tolerance}" in snakefile
+    assert "--no-default-filter" in snakefile
+    assert "_variants.raw.vcf.gz" in snakefile
+    assert "LOFREQ_PRIMER_RESCUE_ENABLED" in snakefile
+    assert "rescue_lofreq_primer_variants" in snakefile
+    assert "_variants.rescued.tsv" in snakefile
     assert "_validate_primer_bed_reference(PRIMER_BED, REF)" in snakefile
     assert "_consensus.fasta" in snakefile
     assert "_iupac_consensus.fasta" in snakefile
     assert "df['consensus']" in snakefile
     assert "df['iupac_consensus']" in snakefile
+    assert "df['lofreq_rescued_tsv']" in snakefile

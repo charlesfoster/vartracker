@@ -1,6 +1,9 @@
 import pytest
 
-from vartracker.analysis_launcher import _validate_primer_bed_reference
+from vartracker.analysis_launcher import (
+    _validate_lofreq_primer_rescue,
+    _validate_primer_bed_reference,
+)
 
 
 def test_validate_primer_bed_reference_accepts_matching_contig(tmp_path):
@@ -35,3 +38,29 @@ def test_validate_primer_bed_reference_rejects_empty_bed(tmp_path):
 
     with pytest.raises(ValueError, match="contains no intervals"):
         _validate_primer_bed_reference(primer_bed, reference)
+
+
+def test_validate_lofreq_primer_rescue_on_requires_primer_bed():
+    with pytest.raises(ValueError, match="requires --primer-bed"):
+        _validate_lofreq_primer_rescue(
+            "on",
+            None,
+            min_af=0.95,
+            min_dp=100,
+            min_alt_count=95,
+            min_qual=100,
+            max_ref_count=20,
+        )
+
+
+def test_validate_lofreq_primer_rescue_rejects_invalid_threshold():
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        _validate_lofreq_primer_rescue(
+            "auto",
+            None,
+            min_af=1.5,
+            min_dp=100,
+            min_alt_count=95,
+            min_qual=100,
+            max_ref_count=20,
+        )

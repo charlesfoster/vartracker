@@ -2,8 +2,16 @@ import pandas as pd
 from pathlib import Path
 try:
     from vartracker.consensus import consensus_genotype_for_variant
+    from vartracker.lofreq_primer_rescue import (
+        PrimerRescueThresholds,
+        rescue_lofreq_primer_variants,
+    )
 except ModuleNotFoundError:
     from consensus import consensus_genotype_for_variant
+    from lofreq_primer_rescue import (
+        PrimerRescueThresholds,
+        rescue_lofreq_primer_variants,
+    )
 
 # Load samples from CSV
 samples_df = pd.read_csv(config["samples_csv"])
@@ -19,6 +27,22 @@ MIN_DEPTH = int(config.get("min_depth", 10))
 CONSENSUS_SNP_MIN_AF = float(config.get("consensus_snp_min_af", 0.25))
 CONSENSUS_SNP_THRESH = float(config.get("consensus_snp_thresh", 0.75))
 CONSENSUS_INDEL_THRESH = float(config.get("consensus_indel_thresh", 0.75))
+LOFREQ_PRIMER_RESCUE = str(config.get("lofreq_primer_rescue", "auto")).lower()
+LOFREQ_RESCUE_MIN_AF = float(config.get("lofreq_rescue_min_af", 0.95))
+LOFREQ_RESCUE_MIN_DP = int(config.get("lofreq_rescue_min_dp", 100))
+LOFREQ_RESCUE_MIN_ALT_COUNT = int(config.get("lofreq_rescue_min_alt_count", 95))
+LOFREQ_RESCUE_MIN_QUAL = float(config.get("lofreq_rescue_min_qual", 100.0))
+LOFREQ_RESCUE_MAX_REF_COUNT = int(config.get("lofreq_rescue_max_ref_count", 20))
+
+if LOFREQ_PRIMER_RESCUE not in {"auto", "on", "off"}:
+    raise ValueError("lofreq_primer_rescue must be one of: auto, on, off")
+if LOFREQ_PRIMER_RESCUE == "on" and not PRIMER_BED:
+    raise ValueError("lofreq_primer_rescue='on' requires primer_bed")
+
+LOFREQ_PRIMER_RESCUE_ENABLED = (
+    LOFREQ_PRIMER_RESCUE == "on"
+    or (LOFREQ_PRIMER_RESCUE == "auto" and bool(PRIMER_BED))
+)
 
 def _value_or_blank(sample, key, allow_blank=False):
     value = SAMPLES[sample].get(key)
@@ -255,21 +279,58 @@ rule lofreq_call:
         bam = f"{OUTDIR}/{{sample}}/{{sample}}_aligned.indelqual.bam",
         ref = REF
     output:
-        vcf_raw = temp(f"{OUTDIR}/{{sample}}/{{sample}}_variants.raw.vcf"),
+        vcf_raw = temp(f"{OUTDIR}/{{sample}}/{{sample}}_variants.raw.vcf.gz"),
+        vcf_filtered = temp(f"{OUTDIR}/{{sample}}/{{sample}}_variants.filtered.vcf"),
+        rescued_tsv = f"{OUTDIR}/{{sample}}/{{sample}}_variants.rescued.tsv",
         vcf = f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz",
         csi = f"{OUTDIR}/{{sample}}/{{sample}}_variants.vcf.gz.csi"
     log:
         f"{OUTDIR}/{{sample}}/logs/lofreq_call.log"
     threads: min(8, max(1, workflow.cores))
-    shell:
-        """
-        mkdir -p $(dirname {log})
-        lofreq call-parallel --no-baq --call-indels --pp-threads {threads} \
-            -f {input.ref} -o {output.vcf_raw} {input.bam} 2> {log}
+    run:
+        log_path = Path(str(log[0]))
+        log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        bgzip -c {output.vcf_raw} > {output.vcf} 2>> {log}
-        bcftools index {output.vcf} 2>> {log}
-        """
+        shell("""
+            lofreq call-parallel --no-baq --call-indels --no-default-filter \
+                --pp-threads {threads} -f {input.ref} -o {output.vcf_raw} \
+                {input.bam} 2> {log}
+        """)
+
+        if LOFREQ_PRIMER_RESCUE_ENABLED:
+            thresholds = PrimerRescueThresholds(
+                min_af=LOFREQ_RESCUE_MIN_AF,
+                min_dp=LOFREQ_RESCUE_MIN_DP,
+                min_alt_count=LOFREQ_RESCUE_MIN_ALT_COUNT,
+                min_qual=LOFREQ_RESCUE_MIN_QUAL,
+                max_ref_count=LOFREQ_RESCUE_MAX_REF_COUNT,
+            )
+            result = rescue_lofreq_primer_variants(
+                raw_vcf=str(output.vcf_raw),
+                primers_bed=PRIMER_BED,
+                output_vcf=str(output.vcf_filtered),
+                rescued_tsv=str(output.rescued_tsv),
+                tmp_dir=str(log_path.parent),
+                thresholds=thresholds,
+            )
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "lofreq primer rescue: "
+                    f"normal_passed={result.normal_passed} "
+                    f"rescued={result.rescued} discarded={result.discarded}\n"
+                )
+        else:
+            shell(
+                "lofreq filter -i {output.vcf_raw} "
+                "-o {output.vcf_filtered} 2>> {log}"
+            )
+            with open(output.rescued_tsv, "w", encoding="utf-8") as handle:
+                handle.write("variant\treason_filtered\treason_rescued\tmetrics\n")
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write("lofreq primer rescue: disabled\n")
+
+        shell("bgzip -c {output.vcf_filtered} > {output.vcf} 2>> {log}")
+        shell("bcftools index -f {output.vcf} 2>> {log}")
 
 rule deletion_variants_bed:
     input:
@@ -538,6 +599,9 @@ rule update_csv:
         )
         df['coverage'] = df['sample_name'].apply(
             lambda x: os.path.abspath(f"{params.outdir}/{x}/{x}_depth.txt")
+        )
+        df['lofreq_rescued_tsv'] = df['sample_name'].apply(
+            lambda x: os.path.abspath(f"{params.outdir}/{x}/{x}_variants.rescued.tsv")
         )
         df['consensus'] = df['sample_name'].apply(
             lambda x: os.path.abspath(f"{params.outdir}/{x}/{x}_consensus.fasta")

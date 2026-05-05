@@ -420,13 +420,6 @@ def test_process_joint_variants_matches_main_row_by_presence_pattern(tmp_path):
     assert result.loc[2, "type_of_change"] == "joint_missense"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "process_joint_variants currently resolves tied main-row candidates by row "
-        "order, which is unsafe for overlapping genes"
-    ),
-)
 def test_process_joint_variants_is_order_invariant_for_overlapping_gene_rows(tmp_path):
     shared_rows = [
         {

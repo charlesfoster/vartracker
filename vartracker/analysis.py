@@ -112,8 +112,10 @@ def _find_joint_main_index(tab: pd.DataFrame, joint_index: int, main_pos: int) -
 
     joint_presence = _presence_vector(tab.at[joint_index, "presence_absence"])
 
-    def candidate_key(candidate_index: int) -> tuple[int, int, int]:
-        candidate_presence = _presence_vector(tab.at[candidate_index, "presence_absence"])
+    def candidate_score(candidate_index: int) -> tuple[int, int, int]:
+        candidate_presence = _presence_vector(
+            tab.at[candidate_index, "presence_absence"]
+        )
         exact_match = int(candidate_presence == joint_presence)
         shared_present = sum(
             lhs == rhs == "Y" for lhs, rhs in zip(joint_presence, candidate_presence)
@@ -121,7 +123,24 @@ def _find_joint_main_index(tab: pd.DataFrame, joint_index: int, main_pos: int) -
         total_present = sum(token == "Y" for token in candidate_presence)
         return (exact_match, shared_present, total_present)
 
-    return max(candidates, key=candidate_key)
+    best_score = max(candidate_score(candidate_index) for candidate_index in candidates)
+    tied_candidates = [
+        candidate_index
+        for candidate_index in candidates
+        if candidate_score(candidate_index) == best_score
+    ]
+    if len(tied_candidates) == 1:
+        return tied_candidates[0]
+
+    def tie_break_key(candidate_index: int) -> tuple[str, str, str, str]:
+        return (
+            str(tab.at[candidate_index, "gene"]),
+            str(tab.at[candidate_index, "amino_acid_consequence"]),
+            str(tab.at[candidate_index, "bcsq_nt_notation"]),
+            str(tab.at[candidate_index, "bcsq_aa_notation"]),
+        )
+
+    return min(tied_candidates, key=tie_break_key)
 
 
 def process_joint_variants(path):

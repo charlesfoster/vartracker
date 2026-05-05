@@ -248,6 +248,24 @@ Temporary LoFreq note:
 - This is a temporary workaround for an older Bioconda LoFreq build that can fail during `call-parallel` final filtering when many shards produce an excessively long merged VCF header.
 - The cap will be revisited once an updated LoFreq build is available through Bioconda.
 
+LoFreq primer-overlap rescue:
+- Amplicon schemes can create a specific LoFreq false-negative mode: after primer clipping, reads from one strand may be soft clipped at primer-overlap sites, so a genuine near-fixed variant can fail LoFreq's default strand-bias filter.
+- `bam` and `end-to-end` therefore run LoFreq with `--no-default-filter`, then apply the normal `lofreq filter` step so standard LoFreq PASS calls are unchanged.
+- With the default `--lofreq-primer-rescue auto`, the rescue step runs only when `--primer-bed` is supplied. In other words, `auto` means "use primer rescue when an amplicon primer scheme has been explicitly provided."
+- In `end-to-end` mode, the same `--primer-bed` is used for `samtools ampliconclip` and for rescue. In `bam` mode, vartracker does not clip the input BAMs; the primer BED is used only to identify primer-overlap sites for rescue.
+- Rescue candidates must be single-ALT SNPs that overlap a primer interval, fail the default LoFreq filter, and pass conservative near-fixed thresholds (`AF>=0.95`, `DP>=100`, `DP4 alt count>=95`, `QUAL>=100`, `DP4 ref count<=20`) with one-sided alternate-strand support. Indels, multi-ALT records, lower-frequency variants, and non-primer-overlap variants are not rescued by this rule.
+- Rescued variants are marked with `FILTER=RESCUED_PRIMER_OVERLAP`, `INFO/PRIMER_OVERLAP`, and `INFO/RESCUED_BY=overlap_primer_interval`; per-sample details are written to `<sample>_variants.rescued.tsv` and listed in the updated spreadsheet as `lofreq_rescued_tsv`.
+- Use `--lofreq-primer-rescue off` to disable rescue even when a primer BED is supplied, or `--lofreq-primer-rescue on` to require rescue and fail if `--primer-bed` is missing. The rescue thresholds can be adjusted with the `--lofreq-rescue-*` options.
+
+Example amplicon run with primer rescue:
+
+```bash
+vartracker end-to-end inputs.csv \
+  --primer-bed primers.bed \
+  --ampliconclip-tolerance 1 \
+  --outdir results/e2e_amplicon
+```
+
 ### Input Spreadsheets
 
 Every CLI mode reads the same canonical columns:
@@ -266,8 +284,10 @@ Mode-specific expectations:
 - **End-to-end mode** requires `reads1` (and optionally `reads2`); remaining fields are generated.
 
 The `bam` and `end-to-end` workflows also write two consensus FASTA columns to
-the updated Snakemake spreadsheet: `consensus` for a simple consensus and
-`iupac_consensus` for an IUPAC-aware consensus. SNPs below
+the updated Snakemake spreadsheet, plus the LoFreq rescue audit column:
+`consensus` for a simple consensus, `iupac_consensus` for an IUPAC-aware
+consensus, and `lofreq_rescued_tsv` for the per-sample primer-overlap rescue
+table. SNPs below
 `--consensus-snp-min-af` are ignored, SNPs from `--consensus-snp-min-af` up to
 `--consensus-snp-thresh` stay as reference bases in the simple consensus
 and become REF+ALT ambiguity codes in the IUPAC consensus, and SNPs at or above
@@ -286,19 +306,26 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 ### Mode-specific options
 
 - `vartracker vcf` – accepts core analysis options such as `--min-snv-freq`, `--min-indel-freq`,
-  `--allele-frequency-tag`, `--name`, `--outdir`, `--sample-cap`, `--manifest-level`, and literature controls
+  `--allele-frequency-tag`, `--multiallelic-overflow`, `--name`, `--outdir`, `--sample-cap`, `--manifest-level`, and literature controls
   (`--search-pokay`, `--literature-csv`). Use `--test` to run the bundled smoke test.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
   `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`,
-  `--rulegraph`, `--consensus-snp-min-af`, `--consensus-snp-thresh`, and
-  `--consensus-indel-thresh`.
+  `--rulegraph`, `--primer-bed`, `--lofreq-primer-rescue`, `--consensus-snp-min-af`,
+  `--consensus-snp-thresh`, and `--consensus-indel-thresh`.
 - `vartracker end-to-end` – similar to `bam`, with optional amplicon clipping controls:
-  `--primer-bed` and `--ampliconclip-tolerance` (default: `1`).
+  `--primer-bed` and `--ampliconclip-tolerance` (default: `1`). Supplying
+  `--primer-bed` also enables LoFreq primer-overlap rescue by default.
 - `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV, including all heatmap customization filters.
 - `vartracker plot genome` – plot SNP positions along the genome or a selected gene region using all observed allele-frequency values for each variant.
 - `vartracker plot trajectory` – plot allele-frequency trajectories for a selected or auto-ranked subset of variants, optionally in takeover mode using threshold lines and threshold-based filtering.
 - `vartracker plot turnover` – plot new-versus-lost longitudinal turnover from the filtered result set.
 - `vartracker plot lifespan` – plot first-to-last detection spans for a selected or auto-ranked subset of variants.
+
+Consequence-calling note:
+- Vartracker keeps distinct ALT alleles at the same position separate during preprocessing, then rejoins them immediately before `bcftools csq` so codon-level consequences can still be inferred correctly.
+- If more than two ALT alleles remain present in a single sample at one genomic position after frequency filtering, vartracker defaults to stopping with an informative error before `bcftools csq`. This is the safest behavior and the default `--multiallelic-overflow error` mode.
+- `--multiallelic-overflow drop-lowest-af` continues by removing the lowest-frequency retained ALT allele(s) for the affected sample before `bcftools csq`, and prints a warning describing the site and the dropped allele(s).
+- `--multiallelic-overflow skip-site` continues by skipping consequence calling for the affected site entirely, leaving those variants in the results as unannotated rows and printing a warning describing the site.
 
 Heatmap filtering:
 - `vcf`, `bam`, and `end-to-end` always write the default heatmap. To customize heatmap content after a run, use `vartracker plot heatmap results.csv [options]`.
@@ -482,6 +509,7 @@ vartracker produces several output files:
 
 - **results.csv**: Comprehensive variant analysis with all metrics
 - **results_metadata.json**: Output schema version and results metadata
+- **`<sample>_variants.rescued.tsv`** (`bam`/`end-to-end`): LoFreq primer-overlap rescue audit table, empty when rescue is disabled or no variants are rescued
 - **new_mutations.csv**: Mutations not present in the first sample
 - **persistent_new_mutations.csv**: New mutations that persist to the final sample
 - **cumulative_mutations.pdf**: Plot showing mutation accumulation over time
@@ -519,9 +547,9 @@ vartracker schema literature
 
 The pipeline performs the following analysis:
 
-1. **VCF Standardization**: Normalizes and standardizes input VCF files
-2. **Annotation**: Adds amino acid consequences using `bcftools csq`
-3. **Variant Merging**: Combines all longitudinal samples
+1. **VCF Standardization**: Normalizes and standardizes input VCF files, preserving distinct ALT alleles at the same genomic position
+2. **Variant Merging**: Combines all longitudinal samples
+3. **Annotation**: Adds amino acid consequences using `bcftools csq` on the merged VCF so sample-specific joint consequences are inferred from each sample's surviving ALT combination
 4. **Comprehensive Analysis**: For each variant, determines:
    - Gene location and amino acid consequences
    - Variant type (SNP/indel) and change type (synonymous/missense/etc.)
@@ -536,13 +564,11 @@ The pipeline performs the following analysis:
 ## Citation
 
 When using vartracker, please cite the software release you used. Citation metadata is provided
-in `CITATION.cff`, and GitHub releases are archived on Zenodo (DOI will appear here once minted).
+in `CITATION.cff`, and GitHub releases are archived on Zenodo.
 
-If you use vartracker, please cite the software record on Zenodo:
+- Foster, C. (2026). *vartracker* (Version 2.2.0). Zenodo. https://doi.org/10.5281/zenodo.18452274
 
-- Foster, C. (2026). *vartracker* (Version x.y.z). Zenodo. https://doi.org/10.5281/zenodo.XXXXX
-- Concept DOI (all versions): https://doi.org/10.5281/zenodo.18452274
-Note: a version-specific DOI is minted by Zenodo after each GitHub release.
+Note: the DOI above is the Zenodo concept DOI for all versions; a version-specific DOI is minted by Zenodo after each GitHub release.
 
 Also cite relevant methods or data sources, for example:
 

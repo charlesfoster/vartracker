@@ -31,6 +31,37 @@ def test_setup_default_paths_preserves_explicit_values():
     assert updated.gff3 == "/tmp/custom.gff3"
 
 
+def test_vcf_parser_accepts_multiallelic_overflow_option():
+    parser = main_module.create_parser()
+
+    args = parser.parse_args(
+        ["vcf", "inputs.csv", "--multiallelic-overflow", "skip-site"]
+    )
+
+    assert args.multiallelic_overflow == "skip-site"
+
+
+def test_bam_parser_accepts_lofreq_primer_rescue_options():
+    parser = main_module.create_parser()
+
+    args = parser.parse_args(
+        [
+            "bam",
+            "inputs.csv",
+            "--primer-bed",
+            "primers.bed",
+            "--lofreq-primer-rescue",
+            "off",
+            "--lofreq-rescue-min-af",
+            "0.9",
+        ]
+    )
+
+    assert args.primer_bed == "primers.bed"
+    assert args.lofreq_primer_rescue == "off"
+    assert args.lofreq_rescue_min_af == 0.9
+
+
 def test_drop_exact_duplicate_result_rows_removes_only_exact_duplicates(capsys):
     table = pd.DataFrame(
         [
@@ -1039,6 +1070,8 @@ def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     assert recorded["workflow_kwargs"]["consensus_snp_thresh"] == 0.80
     assert recorded["workflow_kwargs"]["consensus_indel_thresh"] == 0.70
     assert recorded["workflow_kwargs"]["ampliconclip_tolerance"] == 2
+    assert recorded["workflow_kwargs"]["lofreq_primer_rescue"] == "auto"
+    assert recorded["workflow_kwargs"]["lofreq_rescue_min_af"] == 0.95
     assert recorded["vcf_input"] == str(updated_csv)
     assert modes_checked == ["e2e"]
 
@@ -1224,6 +1257,8 @@ def test_bam_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     assert recorded["consensus_snp_min_af"] == 0.25
     assert recorded["consensus_snp_thresh"] == 0.75
     assert recorded["consensus_indel_thresh"] == 0.75
+    assert recorded["primer_bed"] is None
+    assert recorded["lofreq_primer_rescue"] == "auto"
     assert recorded["vcf_input"] == str(updated_csv)
     assert recorded["suppress_logo"] is True
     assert modes_checked == ["bam"]

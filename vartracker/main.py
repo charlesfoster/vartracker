@@ -79,6 +79,7 @@ from .annotation_processing import (
     validate_reference_and_annotation,
 )
 from .reference_prepare import parse_accessions, prepare_reference_bundle
+from .lofreq_primer_rescue import PrimerRescueThresholds
 
 _RED = "\033[91m"
 _YELLOW = "\033[93m"
@@ -725,6 +726,17 @@ def _configure_vcf_parser(
         help="Minimum allele frequency of indel variants to keep (default: 0.1)",
     )
     analysis_group.add_argument(
+        "--multiallelic-overflow",
+        action="store",
+        required=False,
+        choices=("error", "drop-lowest-af", "skip-site"),
+        default="error",
+        help=(
+            "How to handle sites where more than two ALT alleles remain present in "
+            "one sample after filtering (default: error)"
+        ),
+    )
+    analysis_group.add_argument(
         "-d",
         "--min-depth",
         action="store",
@@ -836,6 +848,51 @@ def _configure_vcf_parser(
     )
 
 
+def _add_lofreq_primer_rescue_arguments(group: argparse._ArgumentGroup) -> None:
+    group.add_argument(
+        "--lofreq-primer-rescue",
+        choices=("auto", "on", "off"),
+        default="auto",
+        help=(
+            "Primer-overlap rescue mode for LoFreq calls. 'auto' runs rescue when "
+            "--primer-bed is supplied; 'off' disables it (default: auto)"
+        ),
+    )
+    group.add_argument(
+        "--lofreq-rescue-min-af",
+        type=float,
+        default=PrimerRescueThresholds.min_af,
+        help="Minimum INFO/AF for primer rescue candidates only (default: 0.95)",
+    )
+    group.add_argument(
+        "--lofreq-rescue-min-dp",
+        type=int,
+        default=PrimerRescueThresholds.min_dp,
+        help="Minimum INFO/DP for primer rescue candidates only (default: 100)",
+    )
+    group.add_argument(
+        "--lofreq-rescue-min-alt-count",
+        type=int,
+        default=PrimerRescueThresholds.min_alt_count,
+        help=(
+            "Minimum DP4 alternate count for primer rescue candidates only "
+            "(default: 95)"
+        ),
+    )
+    group.add_argument(
+        "--lofreq-rescue-min-qual",
+        type=float,
+        default=PrimerRescueThresholds.min_qual,
+        help="Minimum QUAL for primer rescue candidates only (default: 100)",
+    )
+    group.add_argument(
+        "--lofreq-rescue-max-ref-count",
+        type=int,
+        default=PrimerRescueThresholds.max_ref_count,
+        help="Maximum DP4 reference count for primer rescue candidates only (default: 20)",
+    )
+
+
 def _move_action_group_after(
     parser: argparse.ArgumentParser, group_title: str, anchor_title: str
 ) -> None:
@@ -931,6 +988,14 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
         default=8,
         help="Number of cores for Snakemake execution (default: 8)",
     )
+    snk_group.add_argument(
+        "--primer-bed",
+        help=(
+            "Optional primer BED file for LoFreq primer-overlap rescue in BAM mode "
+            "(BAMs are not amplicon-clipped by vartracker)"
+        ),
+    )
+    _add_lofreq_primer_rescue_arguments(snk_group)
     snk_group.add_argument(
         "--snakemake-dryrun",
         action="store_true",
@@ -2034,7 +2099,10 @@ def _add_e2e_subparser(subparsers):
     )
     snk_group.add_argument(
         "--primer-bed",
-        help="Optional primer BED file for amplicon clipping in Snakemake",
+        help=(
+            "Optional primer BED file for amplicon clipping and LoFreq "
+            "primer-overlap rescue"
+        ),
     )
     snk_group.add_argument(
         "--ampliconclip-tolerance",
@@ -2042,6 +2110,7 @@ def _add_e2e_subparser(subparsers):
         default=1,
         help="Tolerance for samtools ampliconclip primer matching (default: 1)",
     )
+    _add_lofreq_primer_rescue_arguments(snk_group)
     snk_group.add_argument(
         "--snakemake-dryrun",
         action="store_true",
@@ -2170,6 +2239,12 @@ def _run_e2e_command(args):
             quiet=not args.verbose,
             mode="reads",
             rulegraph_path=rulegraph_path,
+            lofreq_primer_rescue=args.lofreq_primer_rescue,
+            lofreq_rescue_min_af=args.lofreq_rescue_min_af,
+            lofreq_rescue_min_dp=args.lofreq_rescue_min_dp,
+            lofreq_rescue_min_alt_count=args.lofreq_rescue_min_alt_count,
+            lofreq_rescue_min_qual=args.lofreq_rescue_min_qual,
+            lofreq_rescue_max_ref_count=args.lofreq_rescue_max_ref_count,
         )
 
         if rulegraph_path:
@@ -2306,7 +2381,7 @@ def _run_bam_command(args):
             reference=args.reference,
             outdir=snakemake_outdir,
             cores=args.cores,
-            primer_bed=None,
+            primer_bed=args.primer_bed,
             min_depth=args.min_depth,
             consensus_snp_min_af=args.consensus_snp_min_af,
             consensus_snp_thresh=args.consensus_snp_thresh,
@@ -2316,6 +2391,12 @@ def _run_bam_command(args):
             quiet=not args.verbose,
             mode="bam",
             rulegraph_path=rulegraph_path,
+            lofreq_primer_rescue=args.lofreq_primer_rescue,
+            lofreq_rescue_min_af=args.lofreq_rescue_min_af,
+            lofreq_rescue_min_dp=args.lofreq_rescue_min_dp,
+            lofreq_rescue_min_alt_count=args.lofreq_rescue_min_alt_count,
+            lofreq_rescue_min_qual=args.lofreq_rescue_min_qual,
+            lofreq_rescue_max_ref_count=args.lofreq_rescue_max_ref_count,
         )
 
         if rulegraph_path:
@@ -2626,6 +2707,7 @@ def _process_files(
             args.reference,
             args.gff3,
             args.debug,
+            args.multiallelic_overflow,
         )
 
         # Process VCF and extract variants

@@ -1,12 +1,12 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "vartracker"
-version: "2.1.0"
-date-released: "2026-02-11"
+version: "2.2.0"
+date-released: "2026-05-05"
 license: MIT
 repository-code: "https://github.com/charlesfoster/vartracker"
 url: "https://github.com/charlesfoster/vartracker"
-doi: "10.5281/zenodo.XXXXXXX"
+doi: "10.5281/zenodo.18452274"
 keywords:
   - bioinformatics
   - genomics
@@ -22,7 +22,7 @@ preferred-citation:
     - family-names: Foster
       given-names: Charles
   title: "vartracker"
-  version: "2.1.0"
-  doi: "10.5281/zenodo.XXXXXXX"
+  version: "2.2.0"
+  doi: "10.5281/zenodo.18452274"
   url: "https://github.com/charlesfoster/vartracker"
-  date-released: "2026-02-11"
+  date-released: "2026-05-05"
