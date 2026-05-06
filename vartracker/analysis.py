@@ -34,7 +34,7 @@ def _ensure_joint_prefix(change_type: object) -> str:
     text = str(change_type or "").strip()
     if not text:
         return "joint"
-    normalised = re.sub(r"^(joint_)+", "", text)
+    normalised = re.sub(r"^(joint_)+", "", text).lstrip("*")
     return f"joint_{normalised}" if normalised else "joint"
 
 
@@ -493,20 +493,35 @@ def _build_gene_order_map(
     return gene_order_map, ordered
 
 
-def _map_orf1ab_position_to_nsp(aa_position: int) -> str:
-    """Map an ORF1ab amino acid position to its NSP name."""
+def _map_orf1ab_position_to_nsp_info(aa_position: int) -> tuple[str, int]:
+    """Map an ORF1ab amino acid position to its NSP name and local position."""
     nsp_products = cast(Sequence[str], NSPS.get("product", []))
     aa_starts = cast(Sequence[int], NSPS.get("aa_start", []))
 
-    for name, start in zip(nsp_products, aa_starts):
-        length = NSP_LENGTHS.get(str(name))
-        if length is None:
-            continue
-        end = start + length - 1
+    for idx, (name, start) in enumerate(zip(nsp_products, aa_starts)):
+        end = aa_starts[idx + 1] - 1 if idx + 1 < len(aa_starts) else 999999
         if start <= aa_position <= end:
-            return name
+            return str(name), aa_position - start + 1
 
-    return "ORF1ab"
+    return "ORF1ab", aa_position
+
+
+def _map_orf1ab_position_to_nsp(aa_position: int) -> str:
+    """Map an ORF1ab amino acid position to its NSP name."""
+    return _map_orf1ab_position_to_nsp_info(aa_position)[0]
+
+
+def _format_orf1ab_change_as_nsp(amino_change: object) -> tuple[str, str] | None:
+    """Convert an ORF1ab amino-acid label to NSP-local notation when possible."""
+    text = str(amino_change or "").strip()
+    match = re.fullmatch(r"([A-Za-z*]*)(\d+)([A-Za-z*]*)", text)
+    if not match:
+        return None
+    ref = match.group(1)
+    aa_position = int(match.group(2))
+    alt = match.group(3)
+    gene_label, local_position = _map_orf1ab_position_to_nsp_info(aa_position)
+    return gene_label, f"{ref}{local_position}{alt}"
 
 
 def _extract_numeric_position(value: str) -> Optional[int]:
@@ -547,7 +562,8 @@ def _resolve_variant_labels(row) -> Tuple[str, str, str]:
     gene = getattr(row, "gene", "")
     amino_change = getattr(row, "amino_acid_consequence", "")
     nsp_change = getattr(row, "nsp_aa_change", "")
-    change_type = str(getattr(row, "type_of_change", ""))
+    change_type = str(getattr(row, "type_of_change", "")).lstrip("*")
+    change_type = re.sub(r"^(joint_)+", "", change_type)
 
     gene_label = gene
     aa_label = amino_change
@@ -559,10 +575,14 @@ def _resolve_variant_labels(row) -> Tuple[str, str, str]:
                 gene_label = gene_part
             if aa_part:
                 aa_label = aa_part
+            if "*" in str(amino_change) and "*" not in str(aa_label):
+                mapped_change = _format_orf1ab_change_as_nsp(amino_change)
+                if mapped_change is not None:
+                    gene_label, aa_label = mapped_change
         else:
-            position = _extract_numeric_position(amino_change)
-            if position is not None:
-                gene_label = _map_orf1ab_position_to_nsp(position)
+            mapped_change = _format_orf1ab_change_as_nsp(amino_change)
+            if mapped_change is not None:
+                gene_label, aa_label = mapped_change
 
     if not aa_label or str(aa_label) in {"", "None"}:
         if isinstance(nsp_change, str) and ":" in nsp_change:
@@ -710,7 +730,7 @@ def _prepare_variant_heatmap_matrix(
     )
 
     records: List[Dict[str, Union[str, float, int]]] = []
-    seen_labels = set()
+    record_index_by_label: dict[str, int] = {}
     qc_maps: dict[str, dict[str, str]] = {}
 
     for row in table.itertuples(index=False):
@@ -729,10 +749,9 @@ def _prepare_variant_heatmap_matrix(
 
         gene_label, display_label, base_label = _resolve_variant_labels(row)
 
-        if base_label in seen_labels:
-            continue
-
-        change_type = str(getattr(row, "type_of_change", "")).strip().lower()
+        change_type = (
+            str(getattr(row, "type_of_change", "")).strip().lower().lstrip("*")
+        )
         if not include_joint and change_type.startswith("joint"):
             continue
         if included_patterns and not any(
@@ -842,8 +861,33 @@ def _prepare_variant_heatmap_matrix(
         for sample, value in zip(ordered_samples, row_values):
             record[sample] = value
 
+        if display_label in record_index_by_label:
+            existing = records[record_index_by_label[display_label]]
+            existing["gene_order"] = min(
+                int(existing.get("gene_order", record["gene_order"])),
+                int(record["gene_order"]),
+            )
+            existing["start"] = min(
+                int(existing.get("start", record["start"])),
+                int(record["start"]),
+            )
+            existing_qc = qc_maps.setdefault(display_label, {})
+            for sample, value in zip(ordered_samples, row_values):
+                current_value = existing.get(sample, 0.0)
+                current_frequency = (
+                    float(current_value)
+                    if isinstance(current_value, (int, float))
+                    else _coerce_frequency(str(current_value))
+                )
+                if value > current_frequency:
+                    existing[sample] = value
+                    existing_qc[sample] = row_qc_map.get(sample, "")
+                elif sample not in existing_qc:
+                    existing_qc[sample] = row_qc_map.get(sample, "")
+            continue
+
+        record_index_by_label[display_label] = len(records)
         records.append(record)
-        seen_labels.add(base_label)
         qc_maps[display_label] = {
             sample: row_qc_map.get(sample, "") for sample in ordered_samples
         }

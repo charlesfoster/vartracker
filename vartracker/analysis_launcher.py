@@ -75,6 +75,7 @@ def _validate_lofreq_primer_rescue(
     min_alt_count: int,
     min_qual: float,
     max_ref_count: int,
+    max_minor_alt_fraction: float,
 ) -> None:
     if mode not in {"auto", "on", "off"}:
         raise ValueError("lofreq_primer_rescue must be one of: auto, on, off")
@@ -90,6 +91,8 @@ def _validate_lofreq_primer_rescue(
         raise ValueError("lofreq_rescue_min_qual must be >= 0")
     if max_ref_count < 0:
         raise ValueError("lofreq_rescue_max_ref_count must be >= 0")
+    if not 0 <= max_minor_alt_fraction <= 1:
+        raise ValueError("lofreq_rescue_max_minor_alt_fraction must be between 0 and 1")
 
 
 def run_workflow(
@@ -114,6 +117,7 @@ def run_workflow(
     lofreq_rescue_min_alt_count: int = 95,
     lofreq_rescue_min_qual: float = 100.0,
     lofreq_rescue_max_ref_count: int = 20,
+    lofreq_rescue_max_minor_alt_fraction: float = 0.05,
 ) -> Optional[str]:
     """Run the lofreq variant calling workflow via the Snakemake API.
 
@@ -146,6 +150,7 @@ def run_workflow(
         lofreq_rescue_min_alt_count,
         lofreq_rescue_min_qual,
         lofreq_rescue_max_ref_count,
+        lofreq_rescue_max_minor_alt_fraction,
     )
 
     Path(outdir).mkdir(parents=True, exist_ok=True)
@@ -167,6 +172,7 @@ def run_workflow(
         "lofreq_rescue_min_alt_count": lofreq_rescue_min_alt_count,
         "lofreq_rescue_min_qual": lofreq_rescue_min_qual,
         "lofreq_rescue_max_ref_count": lofreq_rescue_max_ref_count,
+        "lofreq_rescue_max_minor_alt_fraction": (lofreq_rescue_max_minor_alt_fraction),
     }
     if primer_bed_path:
         config_dict["primer_bed"] = primer_bed_path

@@ -50,6 +50,7 @@ def test_validate_lofreq_primer_rescue_on_requires_primer_bed():
             min_alt_count=95,
             min_qual=100,
             max_ref_count=20,
+            max_minor_alt_fraction=0.05,
         )
 
 
@@ -63,4 +64,17 @@ def test_validate_lofreq_primer_rescue_rejects_invalid_threshold():
             min_alt_count=95,
             min_qual=100,
             max_ref_count=20,
+            max_minor_alt_fraction=0.05,
+        )
+
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        _validate_lofreq_primer_rescue(
+            "auto",
+            None,
+            min_af=0.95,
+            min_dp=100,
+            min_alt_count=95,
+            min_qual=100,
+            max_ref_count=20,
+            max_minor_alt_fraction=1.5,
         )

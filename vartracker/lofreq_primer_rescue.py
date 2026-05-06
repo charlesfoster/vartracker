@@ -35,6 +35,7 @@ class PrimerRescueThresholds:
     min_alt_count: int = 95
     min_qual: float = 100.0
     max_ref_count: int = 20
+    max_minor_alt_fraction: float = 0.05
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,17 @@ class PrimerRescueResult:
     rescued: int
     discarded: int
     rescued_tsv: str
+    filtered_out: int = 0
+    filtered_out_tsv: str | None = None
+
+
+@dataclass(frozen=True)
+class LofreqFilterAuditResult:
+    """Summary of default LoFreq filtering with an audit table."""
+
+    normal_passed: int
+    filtered_out: int
+    filtered_out_tsv: str
 
 
 def _open_text(path: str | Path, mode: str = "rt") -> TextIO:
@@ -126,6 +138,13 @@ def _filter_is_pass(fields: list[str]) -> bool:
     return fields[6] in ("PASS", ".")
 
 
+def _is_strand_bias_filter(reason: str) -> bool:
+    return any(
+        item.lower() in {"sb_fdr", "strandbias", "strand_bias"}
+        for item in reason.split(";")
+    )
+
+
 def read_default_filter_results(
     path: str | Path,
 ) -> tuple[set[tuple[str, str, str, str]], dict[tuple[str, str, str, str], str]]:
@@ -150,8 +169,12 @@ def rescue_metrics(
     fields: list[str],
     primers: dict[str, list[tuple[int, int]]],
     thresholds: PrimerRescueThresholds,
+    reason_filtered: str,
 ) -> str | None:
     """Return rescue metrics for a candidate record, or ``None`` if it fails."""
+
+    if not _is_strand_bias_filter(reason_filtered):
+        return None
 
     chrom = fields[0]
     pos = int(fields[1])
@@ -206,15 +229,50 @@ def rescue_metrics(
         return None
     if ref_count > thresholds.max_ref_count:
         return None
-    if not (alt_fwd == 0 or alt_rev == 0):
+    minor_alt_fraction = min(alt_fwd, alt_rev) / alt_count
+    if minor_alt_fraction > thresholds.max_minor_alt_fraction:
         return None
 
     dp4_af = alt_count / dp4_total
     return (
         f"AF={af:g},DP={dp},QUAL={qual:g},"
         f"DP4={ref_fwd}/{ref_rev}/{alt_fwd}/{alt_rev},"
-        f"alt_count={alt_count},ref_count={ref_count},dp4_af={dp4_af:g}"
+        f"alt_count={alt_count},ref_count={ref_count},dp4_af={dp4_af:g},"
+        f"minor_alt_fraction={minor_alt_fraction:g}"
     )
+
+
+def variant_metrics(fields: list[str]) -> str:
+    """Return concise metrics for a raw LoFreq record."""
+    if len(fields) < 8:
+        return "."
+
+    info = parse_info(fields[7])
+    metrics = []
+    if "AF" in info:
+        try:
+            metrics.append(f"AF={_first_float(info['AF']):g}")
+        except ValueError:
+            metrics.append(f"AF={info['AF']}")
+    if "DP" in info:
+        try:
+            metrics.append(f"DP={_first_int(info['DP'])}")
+        except ValueError:
+            metrics.append(f"DP={info['DP']}")
+    if fields[5] != ".":
+        metrics.append(f"QUAL={fields[5]}")
+    counts = _dp4_counts(info.get("DP4", ""))
+    if counts is not None:
+        ref_fwd, ref_rev, alt_fwd, alt_rev = counts
+        ref_count = ref_fwd + ref_rev
+        alt_count = alt_fwd + alt_rev
+        total = ref_count + alt_count
+        metrics.append(f"DP4={ref_fwd}/{ref_rev}/{alt_fwd}/{alt_rev}")
+        metrics.append(f"alt_count={alt_count}")
+        metrics.append(f"ref_count={ref_count}")
+        if total:
+            metrics.append(f"dp4_af={alt_count / total:g}")
+    return ",".join(metrics) if metrics else "."
 
 
 def _add_info_flag(info_text: str, flag: str) -> str:
@@ -284,10 +342,82 @@ def _write_headers(headers: list[str], output: TextIO) -> None:
         output.write(line)
 
 
+def _run_lofreq_filter_print_all(
+    raw_vcf: str | Path,
+    tmp_dir: str | Path | None = None,
+    lofreq: str = "lofreq",
+) -> tuple[set[tuple[str, str, str, str]], dict[tuple[str, str, str, str], str]]:
+    with tempfile.TemporaryDirectory(dir=tmp_dir) as run_tmp_dir:
+        filtered_vcf = os.path.join(run_tmp_dir, "lofreq.default_filtered.vcf")
+        subprocess.run(
+            [lofreq, "filter", "--print-all", "-i", str(raw_vcf), "-o", filtered_vcf],
+            check=True,
+        )
+        return read_default_filter_results(filtered_vcf)
+
+
+def write_default_filtered_vcf(
+    raw_vcf: str | Path,
+    output_vcf: str | Path,
+    filtered_out_tsv_path: str | Path,
+    pass_keys: set[tuple[str, str, str, str]],
+    filter_reasons: dict[tuple[str, str, str, str], str],
+) -> LofreqFilterAuditResult:
+    """Write normal LoFreq PASS records plus a filtered-out audit table."""
+
+    normal_passed = 0
+    filtered_out = 0
+    headers: list[str] = []
+
+    with (
+        _open_text(raw_vcf) as raw,
+        _open_text(output_vcf, "wt") as output,
+        Path(filtered_out_tsv_path).open("w", encoding="utf-8") as filtered_out_tsv,
+    ):
+        filtered_out_tsv.write("variant\treason_filtered\tmetrics\n")
+        for line in raw:
+            if line.startswith("#"):
+                headers.append(line)
+                continue
+
+            if headers:
+                output.writelines(headers)
+                headers = []
+
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 8:
+                continue
+
+            key = _record_key(fields)
+            if key in pass_keys:
+                output.write("\t".join(_pass_fields(fields)) + "\n")
+                normal_passed += 1
+                continue
+
+            reason_filtered = filter_reasons.get(
+                key, "not_passed_default_lofreq_filter"
+            )
+            filtered_out_tsv.write(
+                f"{_variant_name(fields)}\t{reason_filtered}\t"
+                f"{variant_metrics(fields)}\n"
+            )
+            filtered_out += 1
+
+        if headers:
+            output.writelines(headers)
+
+    return LofreqFilterAuditResult(
+        normal_passed=normal_passed,
+        filtered_out=filtered_out,
+        filtered_out_tsv=str(filtered_out_tsv_path),
+    )
+
+
 def write_final_vcf(
     raw_vcf: str | Path,
     output_vcf: str | Path,
     rescued_tsv_path: str | Path,
+    filtered_out_tsv_path: str | Path | None,
     pass_keys: set[tuple[str, str, str, str]],
     filter_reasons: dict[tuple[str, str, str, str], str],
     primers: dict[str, list[tuple[int, int]]],
@@ -298,6 +428,7 @@ def write_final_vcf(
     normal_passed = 0
     rescued = 0
     discarded = 0
+    filtered_out = 0
     headers: list[str] = []
 
     with (
@@ -306,49 +437,91 @@ def write_final_vcf(
         Path(rescued_tsv_path).open("w", encoding="utf-8") as rescued_tsv,
     ):
         rescued_tsv.write("variant\treason_filtered\treason_rescued\tmetrics\n")
+        filtered_out_tsv = (
+            Path(filtered_out_tsv_path).open("w", encoding="utf-8")
+            if filtered_out_tsv_path is not None
+            else None
+        )
+        if filtered_out_tsv is not None:
+            filtered_out_tsv.write("variant\treason_filtered\tmetrics\n")
 
-        for line in raw:
-            if line.startswith("#"):
-                headers.append(line)
-                continue
+        try:
+            for line in raw:
+                if line.startswith("#"):
+                    headers.append(line)
+                    continue
 
-            if headers:
-                _write_headers(headers, output)
-                headers = []
+                if headers:
+                    _write_headers(headers, output)
+                    headers = []
 
-            fields = line.rstrip("\n").split("\t")
-            if len(fields) < 8:
-                discarded += 1
-                continue
-
-            key = _record_key(fields)
-            if key in pass_keys:
-                output.write("\t".join(_pass_fields(fields)) + "\n")
-                normal_passed += 1
-            else:
-                metrics = rescue_metrics(fields, primers, thresholds)
-                if metrics is None:
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) < 8:
                     discarded += 1
                     continue
 
-                output.write("\t".join(_rescued_fields(fields)) + "\n")
-                reason_filtered = filter_reasons.get(
-                    key, "not_passed_default_lofreq_filter"
-                )
-                rescued_tsv.write(
-                    f"{_variant_name(fields)}\t{reason_filtered}\t"
-                    f"overlap_primer_interval\t{metrics}\n"
-                )
-                rescued += 1
+                key = _record_key(fields)
+                if key in pass_keys:
+                    output.write("\t".join(_pass_fields(fields)) + "\n")
+                    normal_passed += 1
+                else:
+                    reason_filtered = filter_reasons.get(
+                        key, "not_passed_default_lofreq_filter"
+                    )
+                    metrics = rescue_metrics(
+                        fields, primers, thresholds, reason_filtered
+                    )
+                    if metrics is None:
+                        discarded += 1
+                        if filtered_out_tsv is not None:
+                            filtered_out_tsv.write(
+                                f"{_variant_name(fields)}\t{reason_filtered}\t"
+                                f"{variant_metrics(fields)}\n"
+                            )
+                            filtered_out += 1
+                        continue
 
-        if headers:
-            _write_headers(headers, output)
+                    output.write("\t".join(_rescued_fields(fields)) + "\n")
+                    rescued_tsv.write(
+                        f"{_variant_name(fields)}\t{reason_filtered}\t"
+                        f"overlap_primer_interval\t{metrics}\n"
+                    )
+                    rescued += 1
+
+            if headers:
+                _write_headers(headers, output)
+        finally:
+            if filtered_out_tsv is not None:
+                filtered_out_tsv.close()
 
     return PrimerRescueResult(
         normal_passed=normal_passed,
         rescued=rescued,
         discarded=discarded,
         rescued_tsv=str(rescued_tsv_path),
+        filtered_out=filtered_out,
+        filtered_out_tsv=(
+            str(filtered_out_tsv_path) if filtered_out_tsv_path is not None else None
+        ),
+    )
+
+
+def lofreq_filter_with_audit(
+    raw_vcf: str | Path,
+    output_vcf: str | Path,
+    filtered_out_tsv: str | Path,
+    tmp_dir: str | Path | None = None,
+    lofreq: str = "lofreq",
+) -> LofreqFilterAuditResult:
+    """Apply default LoFreq filtering and write filtered-out variant details."""
+
+    pass_keys, filter_reasons = _run_lofreq_filter_print_all(raw_vcf, tmp_dir, lofreq)
+    return write_default_filtered_vcf(
+        raw_vcf,
+        output_vcf,
+        filtered_out_tsv,
+        pass_keys,
+        filter_reasons,
     )
 
 
@@ -357,6 +530,7 @@ def rescue_lofreq_primer_variants(
     primers_bed: str | Path,
     output_vcf: str | Path,
     rescued_tsv: str | Path | None = None,
+    filtered_out_tsv: str | Path | None = None,
     tmp_dir: str | Path | None = None,
     lofreq: str = "lofreq",
     thresholds: PrimerRescueThresholds | None = None,
@@ -366,21 +540,18 @@ def rescue_lofreq_primer_variants(
     thresholds = thresholds or PrimerRescueThresholds()
     if rescued_tsv is None:
         rescued_tsv = f"{output_vcf}.rescued.tsv"
+    if filtered_out_tsv is None:
+        filtered_out_tsv = f"{output_vcf}.filtered_out.tsv"
 
     primers = load_primers(primers_bed)
 
-    with tempfile.TemporaryDirectory(dir=tmp_dir) as run_tmp_dir:
-        filtered_vcf = os.path.join(run_tmp_dir, "lofreq.default_filtered.vcf")
-        subprocess.run(
-            [lofreq, "filter", "-i", str(raw_vcf), "-o", filtered_vcf],
-            check=True,
-        )
-        pass_keys, filter_reasons = read_default_filter_results(filtered_vcf)
+    pass_keys, filter_reasons = _run_lofreq_filter_print_all(raw_vcf, tmp_dir, lofreq)
 
     return write_final_vcf(
         raw_vcf,
         output_vcf,
         rescued_tsv,
+        filtered_out_tsv,
         pass_keys,
         filter_reasons,
         primers,
@@ -403,6 +574,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--rescued-tsv",
         help="TSV of rescued variants; default: OUTPUT_VCF.rescued.tsv",
+    )
+    parser.add_argument(
+        "--filtered-out-tsv",
+        help="TSV of raw variants retained by LoFreq calling but filtered from final VCF",
     )
     parser.add_argument("--tmp-dir", help="Optional temporary directory")
     parser.add_argument("--lofreq", default="lofreq", help="lofreq executable")
@@ -436,6 +611,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=PrimerRescueThresholds.max_ref_count,
         help="Maximum DP4 ref count for rescue candidates only (default: 20)",
     )
+    parser.add_argument(
+        "--max-minor-alt-fraction",
+        type=float,
+        default=PrimerRescueThresholds.max_minor_alt_fraction,
+        help=(
+            "Maximum minor ALT strand fraction for rescue candidates only "
+            "(default: 0.05)"
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -447,19 +631,21 @@ def main(argv: list[str] | None = None) -> int:
         min_alt_count=args.min_alt_count,
         min_qual=args.min_qual,
         max_ref_count=args.max_ref_count,
+        max_minor_alt_fraction=args.max_minor_alt_fraction,
     )
     result = rescue_lofreq_primer_variants(
         raw_vcf=args.raw_vcf,
         primers_bed=args.primers_bed,
         output_vcf=args.output_vcf,
         rescued_tsv=args.rescued_tsv,
+        filtered_out_tsv=args.filtered_out_tsv,
         tmp_dir=args.tmp_dir,
         lofreq=args.lofreq,
         thresholds=thresholds,
     )
     print(
         f"normal_passed={result.normal_passed} rescued={result.rescued} "
-        f"discarded={result.discarded}",
+        f"discarded={result.discarded} filtered_out={result.filtered_out}",
         file=sys.stderr,
     )
     return 0
