@@ -401,13 +401,92 @@ def test_process_vcf_splits_sample_specific_bcsq_annotations(tmp_path):
                 "start": 5,
                 "amino_acid_consequence": "K2T",
                 "bcsq_aa_notation": "2K>2T",
-                "presence_absence": "N / Y",
-                "alt_freq": ". / 0.100",
+                "presence_absence": "Y / Y",
+                "alt_freq": "0.100 / 0.100",
             },
         ]
     )
 
     pd.testing.assert_frame_equal(observed, expected)
+
+
+def test_process_vcf_merges_starred_and_unstarred_equivalent_bcsq(tmp_path):
+    vcf_path = tmp_path / "annotated.vcf"
+    vcf_path.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1,length=9>\n"
+        '##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'
+        '##INFO=<ID=BCSQ,Number=.,Type=String,Description="Consequence">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Raw Depth">\n'
+        '##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##FORMAT=<ID=BCSQ,Number=.,Type=Integer,Description="Bitmask of indexes to INFO/BCSQ">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\ts2\n"
+        "chr1\t4\t.\tA\tG\t.\tPASS\tDP=100;AF=0.1;"
+        "BCSQ=*synonymous|GENE1|tx|protein_coding|+|2K|4A>G,"
+        "synonymous|GENE1|tx|protein_coding|+|2K|4A>G"
+        "\tGT:DP:AF:BCSQ\t1:100:0.1:1\t1:100:0.2:4\n",
+        encoding="utf-8",
+    )
+
+    cov1 = tmp_path / "s1.depth.txt"
+    cov2 = tmp_path / "s2.depth.txt"
+    _write_depth_file(cov1)
+    _write_depth_file(cov2)
+
+    table = process_vcf(str(vcf_path), [str(cov1), str(cov2)], 10, ["s1", "s2"])
+
+    assert len(table) == 1
+    row = table.iloc[0]
+    assert row["variant"] == "A4G"
+    assert row["type_of_change"] == "synonymous"
+    assert row["presence_absence"] == "Y / Y"
+    assert row["alt_freq"] == "0.100 / 0.200"
+    assert row["variant_status"] == "original"
+    assert row["persistence_status"] == "original_retained"
+
+
+def test_process_vcf_keeps_single_site_variant_present_when_sample_has_joint_csq(
+    tmp_path,
+):
+    vcf_path = tmp_path / "annotated.vcf"
+    vcf_path.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1,length=9>\n"
+        '##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'
+        '##INFO=<ID=BCSQ,Number=.,Type=String,Description="Consequence">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Raw Depth">\n'
+        '##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##FORMAT=<ID=BCSQ,Number=.,Type=Integer,Description="Bitmask of indexes to INFO/BCSQ">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\ts2\n"
+        "chr1\t4\t.\tA\tG\t.\tPASS\tDP=100;AF=0.2;"
+        "BCSQ=missense|GENE1|tx|protein_coding|+|2K>2A|4A>G,"
+        "frameshift|GENE1|tx|protein_coding|+|2KAAAAAAAAAAAA>2K|4A>G+5A>C"
+        "\tGT:DP:AF:BCSQ\t1:100:0.1:1\t1:100:0.2:4\n",
+        encoding="utf-8",
+    )
+
+    cov1 = tmp_path / "s1.depth.txt"
+    cov2 = tmp_path / "s2.depth.txt"
+    _write_depth_file(cov1)
+    _write_depth_file(cov2)
+
+    table = process_vcf(str(vcf_path), [str(cov1), str(cov2)], 10, ["s1", "s2"])
+    simple = table[table["bcsq_nt_notation"].eq("4A>G")].iloc[0]
+    joint = table[table["bcsq_nt_notation"].str.contains("\\+", regex=True)].iloc[0]
+
+    assert simple["type_of_change"] == "missense"
+    assert simple["presence_absence"] == "Y / Y"
+    assert simple["alt_freq"] == "0.100 / 0.200"
+    assert simple["variant_status"] == "original"
+    assert simple["persistence_status"] == "original_retained"
+
+    assert joint["type_of_change"] == "frameshift"
+    assert joint["presence_absence"] == "N / Y"
+    assert joint["alt_freq"] == ". / 0.200"
 
 
 @pytest.mark.skipif(shutil.which("bcftools") is None, reason="bcftools not available")
@@ -525,7 +604,7 @@ def test_merge_then_annotate_preserves_joint_annotations_across_samples(tmp_path
                 "start": 5,
                 "variant": "A5C",
                 "amino_acid_consequence": "K2T",
-                "presence_absence": "N / Y",
+                "presence_absence": "Y / Y",
                 "type_of_change": "missense",
                 "joint_variant": False,
             },

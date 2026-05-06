@@ -54,12 +54,15 @@ def test_bam_parser_accepts_lofreq_primer_rescue_options():
             "off",
             "--lofreq-rescue-min-af",
             "0.9",
+            "--lofreq-rescue-max-minor-alt-fraction",
+            "0.1",
         ]
     )
 
     assert args.primer_bed == "primers.bed"
     assert args.lofreq_primer_rescue == "off"
     assert args.lofreq_rescue_min_af == 0.9
+    assert args.lofreq_rescue_max_minor_alt_fraction == 0.1
 
 
 def test_drop_exact_duplicate_result_rows_removes_only_exact_duplicates(capsys):
@@ -1072,6 +1075,7 @@ def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     assert recorded["workflow_kwargs"]["ampliconclip_tolerance"] == 2
     assert recorded["workflow_kwargs"]["lofreq_primer_rescue"] == "auto"
     assert recorded["workflow_kwargs"]["lofreq_rescue_min_af"] == 0.95
+    assert recorded["workflow_kwargs"]["lofreq_rescue_max_minor_alt_fraction"] == 0.05
     assert recorded["vcf_input"] == str(updated_csv)
     assert modes_checked == ["e2e"]
 

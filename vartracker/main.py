@@ -891,6 +891,15 @@ def _add_lofreq_primer_rescue_arguments(group: argparse._ArgumentGroup) -> None:
         default=PrimerRescueThresholds.max_ref_count,
         help="Maximum DP4 reference count for primer rescue candidates only (default: 20)",
     )
+    group.add_argument(
+        "--lofreq-rescue-max-minor-alt-fraction",
+        type=float,
+        default=PrimerRescueThresholds.max_minor_alt_fraction,
+        help=(
+            "Maximum minor ALT strand fraction for primer rescue candidates only "
+            "(default: 0.05)"
+        ),
+    )
 
 
 def _move_action_group_after(
@@ -2245,6 +2254,9 @@ def _run_e2e_command(args):
             lofreq_rescue_min_alt_count=args.lofreq_rescue_min_alt_count,
             lofreq_rescue_min_qual=args.lofreq_rescue_min_qual,
             lofreq_rescue_max_ref_count=args.lofreq_rescue_max_ref_count,
+            lofreq_rescue_max_minor_alt_fraction=(
+                args.lofreq_rescue_max_minor_alt_fraction
+            ),
         )
 
         if rulegraph_path:
@@ -2397,6 +2409,9 @@ def _run_bam_command(args):
             lofreq_rescue_min_alt_count=args.lofreq_rescue_min_alt_count,
             lofreq_rescue_min_qual=args.lofreq_rescue_min_qual,
             lofreq_rescue_max_ref_count=args.lofreq_rescue_max_ref_count,
+            lofreq_rescue_max_minor_alt_fraction=(
+                args.lofreq_rescue_max_minor_alt_fraction
+            ),
         )
 
         if rulegraph_path:

@@ -873,18 +873,54 @@ def _decode_sample_bcsq_annotations(v, samples, annotations):
     return decoded
 
 
-def _mask_allele_frequencies_for_annotation(
-    annotation, allele_freqs, samples, sample_bcsq_map
+def _normalise_bcsq_change_type(change_type):
+    """Remove bcftools' leading compound-context marker from a consequence type."""
+    return str(change_type or "").lstrip("*")
+
+
+def _normalise_bcsq_annotation(annotation):
+    """Return a BCSQ annotation key that ignores leading consequence markers."""
+    parts = str(annotation).split("|", 1)
+    if not parts:
+        return str(annotation)
+    parts[0] = _normalise_bcsq_change_type(parts[0])
+    return "|".join(parts)
+
+
+def _group_equivalent_bcsq_annotations(annotations):
+    """Group BCSQ annotations that represent the same consequence."""
+    groups = {}
+    ordered_groups = []
+    for annotation in annotations:
+        key = _normalise_bcsq_annotation(annotation)
+        if key not in groups:
+            groups[key] = []
+            ordered_groups.append(groups[key])
+        groups[key].append(annotation)
+    return ordered_groups
+
+
+def _representative_bcsq_annotation(annotations):
+    """Choose the least-decorated BCSQ annotation from an equivalent group."""
+    for annotation in annotations:
+        change_type = str(annotation).split("|", 1)[0]
+        if not change_type.startswith("*"):
+            return annotation
+    return annotations[0]
+
+
+def _mask_allele_frequencies_for_annotation_group(
+    annotations, allele_freqs, samples, sample_bcsq_map
 ):
-    """Keep allele frequencies only for samples where the annotation applies."""
+    """Keep allele frequencies for samples matching any equivalent annotation."""
+    annotation_set = set(annotations)
     masked = []
     for sample, allele_freq in zip(samples, allele_freqs):
         if allele_freq == ".":
             masked.append(".")
             continue
-        masked.append(
-            allele_freq if annotation in sample_bcsq_map.get(sample, []) else "."
-        )
+        sample_annotations = set(sample_bcsq_map.get(sample, []))
+        masked.append(allele_freq if annotation_set & sample_annotations else ".")
     return masked
 
 
@@ -980,6 +1016,29 @@ def _annotation_alt_for_record(v, anno):
     return None
 
 
+def _annotation_is_single_record_allele(v, anno, annotation_alt) -> bool:
+    """Return True when a BCSQ annotation describes only the current allele."""
+    if len(anno) <= 6 or (len(anno) == 1 and str(anno[0]).startswith("@")):
+        return False
+
+    dna_change = str(anno[6] or "").strip()
+    if not dna_change or "+" in dna_change:
+        return False
+
+    match = re.fullmatch(r"(\d+)([^>]+)>([^>]+)", dna_change)
+    if not match:
+        return False
+
+    pos = int(match.group(1))
+    ref = match.group(2)
+    alt = match.group(3)
+    if pos != int(v.POS) or ref != str(v.REF):
+        return False
+    if annotation_alt is not None and alt != str(annotation_alt):
+        return False
+    return alt in {str(value) for value in (v.ALT or [])}
+
+
 def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
     """
     Process VCF file and extract variant information.
@@ -1047,11 +1106,13 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
         # Process annotations
         if "BCSQ" in info:
             annotations = v.INFO["BCSQ"].split(",")
+            annotation_groups = _group_equivalent_bcsq_annotations(annotations)
             sample_bcsq_map = _decode_sample_bcsq_annotations(v, samples, annotations)
             produced_annotation_specific_row = False
 
             if sample_bcsq_map:
-                for annot in annotations:
+                for annotation_group in annotation_groups:
+                    annot = _representative_bcsq_annotation(annotation_group)
                     anno = annot.split("|")
                     annotation_alt = _annotation_alt_for_record(v, anno)
                     annotation_allele_freqs = (
@@ -1059,9 +1120,17 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
                         if annotation_alt is not None
                         else allele_freqs
                     )
-                    masked_allele_freqs = _mask_allele_frequencies_for_annotation(
-                        annot, annotation_allele_freqs, samples, sample_bcsq_map
-                    )
+                    if _annotation_is_single_record_allele(v, anno, annotation_alt):
+                        masked_allele_freqs = annotation_allele_freqs
+                    else:
+                        masked_allele_freqs = (
+                            _mask_allele_frequencies_for_annotation_group(
+                                annotation_group,
+                                annotation_allele_freqs,
+                                samples,
+                                sample_bcsq_map,
+                            )
+                        )
                     masked_trajectory = _summarise_sample_trajectory(
                         masked_allele_freqs, samples
                     )
@@ -1088,7 +1157,8 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
                     produced_annotation_specific_row = True
 
             if not produced_annotation_specific_row:
-                for annot in annotations:
+                for annotation_group in annotation_groups:
+                    annot = _representative_bcsq_annotation(annotation_group)
                     anno = annot.split("|")
                     annotation_alt = _annotation_alt_for_record(v, anno)
                     annotation_allele_freqs = (
@@ -1179,6 +1249,7 @@ def _process_annotation(
 ):
     """Process a single annotation from bcftools csq."""
     selected_alt = alt_allele or (v.ALT[0] if v.ALT else "")
+    type_of_change = _normalise_bcsq_change_type(anno[0] if anno else "")
     if len(anno) == 1 and anno[0].startswith("@"):
         # Joint variant annotation
         return {
@@ -1194,7 +1265,7 @@ def _process_annotation(
             "bcsq_nt_notation": anno[0],
             "bcsq_aa_notation": anno[0],
             "type_of_variant": v.var_type,
-            "type_of_change": anno[0],
+            "type_of_change": type_of_change,
             "variant_status": variant_status,
             "persistence_status": persistent_status,
             "presence_absence": " / ".join(presence_absence),
@@ -1240,7 +1311,7 @@ def _process_annotation(
             "bcsq_nt_notation": anno[6] if len(anno) > 5 else "",
             "bcsq_aa_notation": anno[5] if len(anno) > 5 else "",
             "type_of_variant": v.var_type,
-            "type_of_change": anno[0],
+            "type_of_change": type_of_change,
             "variant_status": variant_status,
             "persistence_status": persistent_status,
             "presence_absence": " / ".join(presence_absence),

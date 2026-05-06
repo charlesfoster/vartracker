@@ -145,24 +145,16 @@ def bcf_orf1ab_to_nsp(mutation):
     Raises:
         ValueError: If mutation format is invalid
     """
-    # Parse out important bits from mutation
+    # Parse out important bits from mutation. Stop codons are represented as "*"
+    # and must be retained in both ORF1ab and NSP notation.
     no_gene = re.sub(".*:", "", mutation)
-    parsed = re.findall(r"([A-Z]+)", no_gene)
-
-    if len(parsed) == 2:
-        ref = parsed[0]
-        alt = parsed[1]
-    elif len(parsed) == 1:
-        ref = ""
-        alt = parsed[0]
-    else:
+    parsed = re.fullmatch(r"([A-Z*]*)(\d+)([A-Z*]*)", no_gene)
+    if not parsed:
         raise ValueError(f"Invalid mutation format: {mutation}")
 
-    pos_match = re.search(r"(\d+)", no_gene)
-    if not pos_match:
-        raise ValueError(f"No position found in mutation: {mutation}")
-
-    pos = int(pos_match.group())
+    ref = parsed.group(1)
+    pos = int(parsed.group(2))
+    alt = parsed.group(3)
 
     # Find corresponding nsp
     idx = bisect_right(NSPS["aa_start"], pos) - 1
@@ -264,9 +256,18 @@ def reformat_csq_notation(gene, string):
     if splitter == -1:
         return (string, "")
 
-    ref = re.sub("[0-9]", "", string[:splitter])
-    pos = re.sub("[A-Za-z]", "", string[:splitter])
-    alt = re.sub("[0-9]", "", string[splitter + 1 :])
+    left = string[:splitter]
+    right = string[splitter + 1 :]
+    left_match = re.fullmatch(r"(\d+)([A-Za-z*]+)", left)
+    right_match = re.fullmatch(r"(\d+)([A-Za-z*]+)", right)
+    if left_match and right_match:
+        ref = left_match.group(2)
+        pos = left_match.group(1)
+        alt = right_match.group(2)
+    else:
+        ref = re.sub("[0-9]", "", left)
+        pos = re.sub("[A-Za-z*]", "", left)
+        alt = re.sub("[0-9]", "", right)
     reformatted = ref + pos + alt
 
     if gene == "ORF1ab":

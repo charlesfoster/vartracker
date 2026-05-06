@@ -167,7 +167,8 @@ Docker is a self-contained reproducible option. If you publish the image, record
 set it when running to include it in the run manifest:
 
 ```bash
-export VARTRACKER_CONTAINER_IMAGE=ghcr.io/your-org/vartracker:2.0.0
+export
+.2.1
 export VARTRACKER_CONTAINER_DIGEST=sha256:...
 ```
 
@@ -253,8 +254,10 @@ LoFreq primer-overlap rescue:
 - `bam` and `end-to-end` therefore run LoFreq with `--no-default-filter`, then apply the normal `lofreq filter` step so standard LoFreq PASS calls are unchanged.
 - With the default `--lofreq-primer-rescue auto`, the rescue step runs only when `--primer-bed` is supplied. In other words, `auto` means "use primer rescue when an amplicon primer scheme has been explicitly provided."
 - In `end-to-end` mode, the same `--primer-bed` is used for `samtools ampliconclip` and for rescue. In `bam` mode, vartracker does not clip the input BAMs; the primer BED is used only to identify primer-overlap sites for rescue.
-- Rescue candidates must be single-ALT SNPs that overlap a primer interval, fail the default LoFreq filter, and pass conservative near-fixed thresholds (`AF>=0.95`, `DP>=100`, `DP4 alt count>=95`, `QUAL>=100`, `DP4 ref count<=20`) with one-sided alternate-strand support. Indels, multi-ALT records, lower-frequency variants, and non-primer-overlap variants are not rescued by this rule.
+- Rescue candidates must be single-ALT SNPs that overlap a primer interval, fail LoFreq's default strand-bias filtering, and pass conservative near-fixed thresholds (`AF>=0.95`, `DP>=100`, `DP4 alt count>=95`, `QUAL>=100`, `DP4 ref count<=20`, minor ALT strand fraction `<=0.05`). Indels, multi-ALT records, lower-frequency variants, non-primer-overlap variants, and variants filtered for non-strand-bias reasons are not rescued by this rule.
+- The raw LoFreq calls are retained as `<sample>_variants.raw.vcf.gz` and listed in the updated spreadsheet as `raw_vcf`.
 - Rescued variants are marked with `FILTER=RESCUED_PRIMER_OVERLAP`, `INFO/PRIMER_OVERLAP`, and `INFO/RESCUED_BY=overlap_primer_interval`; per-sample details are written to `<sample>_variants.rescued.tsv` and listed in the updated spreadsheet as `lofreq_rescued_tsv`.
+- Variants called by raw LoFreq but filtered out of the final VCF are written to `<sample>_variants.filtered_out.tsv` with the LoFreq filter reason and core metrics. This is useful for auditing high-frequency calls that fail strand-bias or other LoFreq filters.
 - Use `--lofreq-primer-rescue off` to disable rescue even when a primer BED is supplied, or `--lofreq-primer-rescue on` to require rescue and fail if `--primer-bed` is missing. The rescue thresholds can be adjusted with the `--lofreq-rescue-*` options.
 
 Example amplicon run with primer rescue:
@@ -284,10 +287,11 @@ Mode-specific expectations:
 - **End-to-end mode** requires `reads1` (and optionally `reads2`); remaining fields are generated.
 
 The `bam` and `end-to-end` workflows also write two consensus FASTA columns to
-the updated Snakemake spreadsheet, plus the LoFreq rescue audit column:
+the updated Snakemake spreadsheet, plus LoFreq audit columns:
 `consensus` for a simple consensus, `iupac_consensus` for an IUPAC-aware
-consensus, and `lofreq_rescued_tsv` for the per-sample primer-overlap rescue
-table. SNPs below
+consensus, `raw_vcf` for raw LoFreq calls, `lofreq_rescued_tsv` for the
+per-sample primer-overlap rescue table, and `lofreq_filtered_out_tsv` for raw
+LoFreq records excluded from the final VCF. SNPs below
 `--consensus-snp-min-af` are ignored, SNPs from `--consensus-snp-min-af` up to
 `--consensus-snp-thresh` stay as reference bases in the simple consensus
 and become REF+ALT ambiguity codes in the IUPAC consensus, and SNPs at or above
@@ -509,7 +513,9 @@ vartracker produces several output files:
 
 - **results.csv**: Comprehensive variant analysis with all metrics
 - **results_metadata.json**: Output schema version and results metadata
+- **`<sample>_variants.raw.vcf.gz`** (`bam`/`end-to-end`): Raw LoFreq calls before default filtering and primer-overlap rescue
 - **`<sample>_variants.rescued.tsv`** (`bam`/`end-to-end`): LoFreq primer-overlap rescue audit table, empty when rescue is disabled or no variants are rescued
+- **`<sample>_variants.filtered_out.tsv`** (`bam`/`end-to-end`): Raw LoFreq calls excluded from the final VCF, including filter reason and call metrics
 - **new_mutations.csv**: Mutations not present in the first sample
 - **persistent_new_mutations.csv**: New mutations that persist to the final sample
 - **cumulative_mutations.pdf**: Plot showing mutation accumulation over time
@@ -566,7 +572,7 @@ The pipeline performs the following analysis:
 When using vartracker, please cite the software release you used. Citation metadata is provided
 in `CITATION.cff`, and GitHub releases are archived on Zenodo.
 
-- Foster, C. (2026). *vartracker* (Version 2.2.0). Zenodo. https://doi.org/10.5281/zenodo.18452274
+- Foster, C. (2026). *vartracker* (Version 2.2.1). Zenodo. https://doi.org/10.5281/zenodo.18452274
 
 Note: the DOI above is the Zenodo concept DOI for all versions; a version-specific DOI is minted by Zenodo after each GitHub release.
 

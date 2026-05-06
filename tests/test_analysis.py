@@ -133,16 +133,73 @@ def test_prepare_variant_heatmap_matrix_orders_variants_by_genome():
     expected_long_label = f"nsp2:{head}+{middle}{tail}\n(G1946GT)"
 
     expected_index = [
-        "nsp2:T809=\n(C1059T)",
+        "nsp2:T629=\n(C1059T)",
         expected_long_label,
         "S:D215G\n(A22206G)",
     ]
 
     assert list(matrix.index) == expected_index
-    assert matrix.loc["nsp2:T809=\n(C1059T)", "P0"] == 0.0
-    assert matrix.loc["nsp2:T809=\n(C1059T)", "P1"] == 0.5
+    assert matrix.loc["nsp2:T629=\n(C1059T)", "P0"] == 0.0
+    assert matrix.loc["nsp2:T629=\n(C1059T)", "P1"] == 0.5
     assert matrix.loc[expected_long_label, "P1"] == 0.8
     assert matrix.loc["S:D215G\n(A22206G)", "P1"] == 1.0
+
+
+def test_prepare_variant_heatmap_matrix_normalises_starred_synonymous_label():
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "ORF1ab",
+                "amino_acid_consequence": "924F",
+                "nsp_aa_change": "",
+                "type_of_change": "*synonymous",
+                "type_of_variant": "snp",
+                "alt_freq": "0.5 / 0.0",
+                "samples": "P0 / P1",
+                "variant": "C3037T",
+                "start": 3037,
+            },
+            {
+                "gene": "ORF1ab",
+                "amino_acid_consequence": "924F",
+                "nsp_aa_change": "",
+                "type_of_change": "synonymous",
+                "type_of_variant": "snp",
+                "alt_freq": "0.0 / 0.6",
+                "samples": "P0 / P1",
+                "variant": "C3037T",
+                "start": 3037,
+            },
+        ]
+    )
+
+    matrix = _prepare_variant_heatmap_matrix(table, ["P0", "P1"], 0.2, 0.3)
+
+    assert list(matrix.index) == ["nsp3_PLpro:F106=\n(C3037T)"]
+    assert matrix.loc["nsp3_PLpro:F106=\n(C3037T)", "P0"] == 0.5
+    assert matrix.loc["nsp3_PLpro:F106=\n(C3037T)", "P1"] == 0.6
+
+
+def test_prepare_variant_heatmap_matrix_repairs_stale_stop_gained_nsp_label():
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "ORF1ab",
+                "amino_acid_consequence": "L889*",
+                "nsp_aa_change": "nsp3_PLpro:71L",
+                "type_of_change": "stop_gained",
+                "type_of_variant": "snp",
+                "alt_freq": "0.052",
+                "samples": "P0",
+                "variant": "T2931A",
+                "start": 2931,
+            },
+        ]
+    )
+
+    matrix = _prepare_variant_heatmap_matrix(table, ["P0"], 0.0, 0.0)
+
+    assert list(matrix.index) == ["nsp3_PLpro:L71*\n(T2931A)"]
 
 
 def test_prepare_variant_heatmap_matrix_excludes_selected_consequence_types():
@@ -329,7 +386,7 @@ def test_process_joint_variants_only_adds_single_joint_prefix(tmp_path):
                 "aa1_weight": "",
                 "aa2_weight": "",
                 "weight_difference": "",
-                "type_of_change": "joint_joint_frameshift",
+                "type_of_change": "joint_*frameshift",
             },
             {
                 "start": 101,
