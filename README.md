@@ -167,8 +167,7 @@ Docker is a self-contained reproducible option. If you publish the image, record
 set it when running to include it in the run manifest:
 
 ```bash
-export
-.2.1
+export VARTRACKER_CONTAINER_IMAGE=ghcr.io/your-org/vartracker:2.2.1
 export VARTRACKER_CONTAINER_DIGEST=sha256:...
 ```
 
