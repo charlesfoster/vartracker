@@ -113,9 +113,18 @@ RESULTS_SCHEMA: list[dict[str, str]] = [
     {
         "name": "persistence_status",
         "type": "string",
-        "description": "Persistence class based on first and last sample presence.",
+        "description": (
+            "Persistence class based on presence at the first and last "
+            "sample, and whether presence was continuous in between. The "
+            "'_intermittent' classes mean the variant was present at both "
+            "the first/last (original) or reappeared by the last sample "
+            "(new), but was absent from at least one sample in between."
+        ),
         "units": "",
-        "values": "original_retained, original_lost, new_persistent, new_transient",
+        "values": (
+            "original_retained, original_intermittent, original_lost, "
+            "new_persistent, new_intermittent, new_transient"
+        ),
     },
     {
         "name": "presence_absence",
@@ -155,7 +164,13 @@ RESULTS_SCHEMA: list[dict[str, str]] = [
     {
         "name": "per_sample_variant_qc",
         "type": "string (slash-separated)",
-        "description": "Per-sample QC flags (P/F) ordered by input.",
+        "description": (
+            "Per-sample QC flags (P/F) ordered by input. A sample fails ('F') "
+            "when there is no variant-supporting read and site coverage is "
+            "below --min-depth, i.e. when genuine absence of the variant "
+            "cannot be distinguished from dropout/non-detection; 'P' means "
+            "absence (or presence) was confidently called at that sample."
+        ),
         "units": "",
         "values": "P, F",
     },

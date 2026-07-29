@@ -32,7 +32,13 @@ from .core import (
     ProcessingError,
     FILE_COLUMNS,
 )
-from .vcf_processing import annotate_vcf, format_vcf, merge_consequences, process_vcf
+from .vcf_processing import (
+    NEW_ENDS_PRESENT_STATUSES,
+    annotate_vcf,
+    format_vcf,
+    merge_consequences,
+    process_vcf,
+)
 from .analysis import (
     process_joint_variants,
     generate_cumulative_lineplot,
@@ -191,7 +197,10 @@ def _add_heatmap_option_arguments(
         action="store_true",
         default=False,
         dest="heatmap_only_persistent",
-        help="Only include variants with persistence_status == new_persistent",
+        help=(
+            "Only include new variants present at the final timepoint "
+            "(persistence_status new_persistent or new_intermittent)"
+        ),
     )
     add_legacy("only-persistent", "heatmap_only_persistent", action="store_true")
     group.add_argument(
@@ -387,7 +396,10 @@ def _add_shared_plot_filter_arguments(group: argparse._ArgumentGroup) -> None:
         "--persistent-only",
         action="store_true",
         default=False,
-        help="Only include variants with persistence_status == new_persistent",
+        help=(
+            "Only include new variants present at the final timepoint "
+            "(persistence_status new_persistent or new_intermittent)"
+        ),
     )
     group.add_argument(
         "--new-only",
@@ -676,6 +688,7 @@ def _configure_vcf_parser(
     include_input_csv: bool,
     input_csv_required: bool = False,
     include_consensus_options: bool = False,
+    consensus_group: argparse._ArgumentGroup | None = None,
 ) -> None:
     if include_input_csv:
         if input_csv_required:
@@ -745,10 +758,17 @@ def _configure_vcf_parser(
         required=False,
         type=int,
         default=10,
-        help="Minimum depth threshold for variant QC (default: 10)",
+        help=(
+            "Minimum depth threshold for variant QC (default: 10). Below "
+            "this depth at a sample, genuine absence of a variant cannot be "
+            "distinguished from dropout/non-detection; that sample is "
+            "flagged 'F' in the per_sample_variant_qc output column rather "
+            "than treated as confident absence."
+        ),
     )
     if include_consensus_options:
-        analysis_group.add_argument(
+        group = consensus_group or analysis_group
+        group.add_argument(
             "--consensus-snp-min-af",
             action="store",
             required=False,
@@ -759,7 +779,7 @@ def _configure_vcf_parser(
                 "considered for consensus (default: 0.25)"
             ),
         )
-        analysis_group.add_argument(
+        group.add_argument(
             "--consensus-snp-thresh",
             action="store",
             required=False,
@@ -770,7 +790,7 @@ def _configure_vcf_parser(
                 "consensus base (default: 0.75)"
             ),
         )
-        analysis_group.add_argument(
+        group.add_argument(
             "--consensus-indel-thresh",
             action="store",
             required=False,
@@ -1061,6 +1081,7 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
         include_input_csv=True,
         input_csv_required=False,
         include_consensus_options=True,
+        consensus_group=snk_group,
     )
     _move_action_group_after(
         bam_parser, "Snakemake options", "Vartracker Analysis Options"
@@ -1672,7 +1693,10 @@ def _add_plot_genome_subparser(subparsers):
         "--persistent-only",
         action="store_true",
         default=False,
-        help="Only include variants with persistence_status == new_persistent",
+        help=(
+            "Only include new variants present at the final timepoint "
+            "(persistence_status new_persistent or new_intermittent)"
+        ),
     )
     filter_group.add_argument(
         "--new-only",
@@ -2175,6 +2199,7 @@ def _add_e2e_subparser(subparsers):
         e2e_parser,
         include_input_csv=False,
         include_consensus_options=True,
+        consensus_group=snk_group,
     )
     _move_action_group_after(
         e2e_parser, "Snakemake options", "Vartracker Analysis Options"
@@ -2248,6 +2273,15 @@ def _run_e2e_command(args):
             snakemake_input,
             optional_empty={"bam", "vcf", "coverage", "reads2"},
         )
+
+        if not args.primer_bed:
+            print(
+                "\033[93mWarning:\033[0m no --primer-bed supplied. If this data was "
+                "generated with amplicon sequencing, primer-binding sites will not "
+                "be clipped and may produce spurious variant calls near "
+                "primer-overlap regions. If your library prep is not amplicon-based, "
+                "this does not apply and can be ignored."
+            )
 
         print(get_logo())
 
@@ -2862,7 +2896,9 @@ def _process_files(
     ].reset_index(drop=True)
     new_mutations.to_csv(os.path.join(args.outdir, "new_mutations.csv"), index=None)
 
-    persistent_mutations = table[table.persistence_status == "new_persistent"][
+    persistent_mutations = table[
+        table.persistence_status.isin(NEW_ENDS_PRESENT_STATUSES)
+    ][
         ["gene", "variant", "amino_acid_consequence", "nsp_aa_change"]
     ].reset_index(drop=True)
     persistent_mutations.to_csv(

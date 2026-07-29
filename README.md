@@ -327,6 +327,17 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 - `vartracker plot turnover` – plot new-versus-lost longitudinal turnover from the filtered result set.
 - `vartracker plot lifespan` – plot first-to-last detection spans for a selected or auto-ranked subset of variants.
 
+QC threshold note:
+- `--min-snv-freq`, `--min-indel-freq`, and `--min-depth` are configurable allele-frequency and
+  read-depth thresholds applied when summarising and visualising longitudinal variant calls. Their
+  defaults reflect our own genomic surveillance and longitudinal sequencing workflows and should be
+  treated as starting points, not universally applicable QC recommendations. The appropriate
+  thresholds for a given study depend on its objective and on the sequencing protocol, depth,
+  variant caller, and empirically established error profile of the upstream workflow: use more
+  stringent thresholds when specificity is prioritised or the input data have higher error rates,
+  and only lower thresholds for low-frequency variant analysis when this is supported by a suitably
+  validated upstream workflow.
+
 Consequence-calling note:
 - Vartracker keeps distinct ALT alleles at the same position separate during preprocessing, then rejoins them immediately before `bcftools csq` so codon-level consequences can still be inferred correctly.
 - If more than two ALT alleles remain present in a single sample at one genomic position after frequency filtering, vartracker defaults to stopping with an informative error before `bcftools csq`. This is the safest behaviour and the default `--multiallelic-overflow error` mode.
@@ -338,7 +349,8 @@ Heatmap filtering:
 - By default, all consequence classes are included except joint variants. Use `--include-joint` to show joint variants.
 - `--aa-exclude`: comma-separated `type_of_change` patterns to exclude. Wildcards are supported.
 - `--aa-include`: comma-separated `type_of_change` patterns to include.
-- `--only-persistent`: only include `new_persistent` variants.
+- `--only-persistent`: only include new variants present at the final timepoint (`new_persistent` or
+  `new_intermittent`; see [Persistence labels](#persistence-labels)).
 - `--only-new`: only include variants with `variant_status == new`.
 - `--gene-include` and `--gene-exclude`: comma-separated gene patterns.
 - `--variant-type`: comma-separated variant-type patterns such as `snp` or `indel`.
@@ -359,7 +371,9 @@ Standalone plot filtering:
 - `--gene`, `--effect`, `--min-af`, `--max-af`: restrict the plotted result set before ranking/selection.
 - `--variants` or `--variant-file`: explicitly choose variants and preserve that order.
 - `--sample-min`, `--sample-max`: restrict the passage/sample-number window.
-- `--persistent-only` and `--new-only`: keep only persistent new variants or only variants with `variant_status == new`.
+- `--persistent-only` and `--new-only`: keep only new variants present at the final timepoint
+  (`new_persistent` or `new_intermittent`; see [Persistence labels](#persistence-labels)) or only
+  variants with `variant_status == new`.
 - `trajectory` and `lifespan` auto-select a limited subset by default (`--top-n`) to stay readable.
 - `turnover` uses all filtered variants by default and is also written automatically during the main `vcf`/`bam`/`end-to-end` workflows as `variant_turnover_plot.pdf`.
 - `genome` uses SNPs only by default, keeps all observed allele-frequency values for each plotted variant, and writes `variant_genome_plot.pdf` during the main workflows.
@@ -554,7 +568,8 @@ vartracker produces several output files:
 - **`<sample>_variants.rescued.tsv`** (`bam`/`end-to-end`): LoFreq primer-overlap rescue audit table, empty when rescue is disabled or no variants are rescued
 - **`<sample>_variants.filtered_out.tsv`** (`bam`/`end-to-end`): Raw LoFreq calls excluded from the final VCF, including filter reason and call metrics
 - **new_mutations.csv**: Mutations not present in the first sample
-- **persistent_new_mutations.csv**: New mutations that persist to the final sample
+- **persistent_new_mutations.csv**: New mutations present at the final sample (`new_persistent` or
+  `new_intermittent`; see [Persistence labels](#persistence-labels))
 - **cumulative_mutations.pdf**: Plot showing mutation accumulation over time
 - **mutations_per_gene.pdf**: Gene-wise mutation statistics
 - **variant_allele_frequency_heatmap.html**: Interactive heatmap with optional literature annotations
@@ -564,6 +579,31 @@ vartracker produces several output files:
 
 By default the manifest is lightweight. Use `--manifest-level deep` to checksum all referenced
 input files (FASTQ/BAM/VCF/coverage) and include file sizes.
+
+### Persistence labels
+
+The `persistence_status` column classifies each variant from `variant_status`
+(`original`: present in the first sample; `new`: absent in the first sample) plus its presence
+pattern across the rest of the samples:
+
+- `original_retained`: an `original` variant continuously present through the final sample.
+- `original_intermittent`: an `original` variant present in the final sample, but absent from at
+  least one sample in between (i.e. lost and regained).
+- `original_lost`: an `original` variant absent by the final sample.
+- `new_persistent`: a `new` variant continuously present from its first appearance through the
+  final sample.
+- `new_intermittent`: a `new` variant present in the final sample, but absent from at least one
+  sample between its first appearance and the final sample (i.e. it appeared, disappeared in a
+  later sample, then reappeared).
+- `new_transient`: a `new` variant absent by the final sample.
+
+These labels are driven by presence/absence, not allele frequency, and depend only on the first,
+last, and intervening samples - they say nothing on their own about whether an intervening absence
+reflects genuine loss or a QC dropout (see the `per_sample_variant_qc` column in
+[Output schema](#output-schema)). `--only-persistent` / `--persistent-only` filters (heatmap and
+standalone plots) and `persistent_new_mutations.csv` include both `new_persistent` and
+`new_intermittent` variants, since both reached the final timepoint; the label only distinguishes
+the path taken to get there.
 
 ### Output schema
 

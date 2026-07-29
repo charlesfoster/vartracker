@@ -14,6 +14,7 @@ from cyvcf2 import VCF
 from vartracker.analysis import process_joint_variants
 from vartracker.vcf_processing import (
     _derive_vcf_output_paths,
+    _summarise_sample_trajectory,
     annotate_vcf,
     format_vcf,
     merge_consequences,
@@ -30,6 +31,71 @@ def test_derive_vcf_output_paths_handles_gz(tmp_path):
     assert csq.endswith("sample1.csq.vcf.gz")
     assert log.endswith("sample1.log")
     assert os.path.dirname(out) == str(tmp_path)
+
+
+def test_summarise_sample_trajectory_original_retained_no_gap():
+    result = _summarise_sample_trajectory(["0.1", "0.1", "0.1"], ["s0", "s1", "s2"])
+    assert result["variant_status"] == "original"
+    assert result["persistent_status"] == "original_retained"
+    assert result["presence_absence"] == ["Y", "Y", "Y"]
+
+
+def test_summarise_sample_trajectory_original_intermittent_has_gap():
+    """Present at first and last timepoints, but absent in between - this is
+    the "original" side of the reviewer's ambiguity, distinct from
+    continuous presence."""
+    result = _summarise_sample_trajectory(["0.1", ".", "0.1"], ["s0", "s1", "s2"])
+    assert result["variant_status"] == "original"
+    assert result["persistent_status"] == "original_intermittent"
+    assert result["presence_absence"] == ["Y", "N", "Y"]
+    assert result["first_appearance"] == "s0"
+    assert result["last_appearance"] == "s2"
+
+
+def test_summarise_sample_trajectory_original_lost():
+    result = _summarise_sample_trajectory(["0.1", "0.1", "."], ["s0", "s1", "s2"])
+    assert result["persistent_status"] == "original_lost"
+
+
+def test_summarise_sample_trajectory_new_persistent_no_gap():
+    result = _summarise_sample_trajectory([".", "0.1", "0.1"], ["s0", "s1", "s2"])
+    assert result["variant_status"] == "new"
+    assert result["persistent_status"] == "new_persistent"
+
+
+def test_summarise_sample_trajectory_new_intermittent_has_gap():
+    """The exact scenario the reviewer flagged: a new mutation that appears,
+    disappears in a subsequent passage, then reappears by the final
+    timepoint. Previously indistinguishable from continuous persistence."""
+    result = _summarise_sample_trajectory(
+        [".", "0.1", ".", "0.1"], ["s0", "s1", "s2", "s3"]
+    )
+    assert result["variant_status"] == "new"
+    assert result["persistent_status"] == "new_intermittent"
+    assert result["first_appearance"] == "s1"
+    assert result["last_appearance"] == "s3"
+
+
+def test_summarise_sample_trajectory_new_transient():
+    result = _summarise_sample_trajectory([".", "0.1", "."], ["s0", "s1", "s2"])
+    assert result["persistent_status"] == "new_transient"
+
+
+def test_summarise_sample_trajectory_absent_throughout_is_new_transient():
+    result = _summarise_sample_trajectory([".", ".", "."], ["s0", "s1", "s2"])
+    assert result["persistent_status"] == "new_transient"
+    assert result["first_appearance"] == "None"
+    assert result["last_appearance"] == "None"
+
+
+def test_summarise_sample_trajectory_leading_absence_is_not_a_gap():
+    """A run of absence *before* the first appearance of a new variant is
+    expected (that's just what "new" means) and must not itself be treated
+    as a gap."""
+    result = _summarise_sample_trajectory(
+        [".", ".", "0.1", "0.1"], ["s0", "s1", "s2", "s3"]
+    )
+    assert result["persistent_status"] == "new_persistent"
 
 
 def test_derive_vcf_output_paths_handles_plain_vcf(tmp_path):

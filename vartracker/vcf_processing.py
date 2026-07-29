@@ -799,27 +799,51 @@ def calculate_variant_site_depths(cov_df, v, samples, min_depth: int):
     return result
 
 
+# A "new" variant present at the final timepoint is new_persistent when its
+# presence was continuous from first appearance onward, or new_intermittent
+# when it disappeared and reappeared along the way. Both are new variants
+# that reached the final timepoint, just with a different path there -
+# consumers that filter on "did this new variant persist to the end" should
+# match this whole set, not new_persistent alone.
+NEW_ENDS_PRESENT_STATUSES = frozenset({"new_persistent", "new_intermittent"})
+
+
 def _summarise_sample_trajectory(allele_freqs, samples):
     """Derive trajectory metadata from per-sample allele frequencies."""
     presence_absence = ["N" if x == "." else "Y" for x in allele_freqs]
     variant_status = "new" if allele_freqs[0] == "." else "original"
 
+    if "Y" in presence_absence:
+        first_present_idx = presence_absence.index("Y")
+        last_present_idx = rindex(presence_absence, "Y")
+        # A gap is an absence sandwiched between the first and last presence,
+        # i.e. the variant disappeared and later reappeared rather than
+        # persisting continuously - see original_intermittent/new_intermittent
+        # below.
+        has_gap = "N" in presence_absence[first_present_idx : last_present_idx + 1]
+    else:
+        first_present_idx = None
+        last_present_idx = None
+        has_gap = False
+
     if allele_freqs[0] != "." and allele_freqs[-1] == ".":
         persistent_status = "original_lost"
     elif allele_freqs[0] != "." and allele_freqs[-1] != ".":
-        persistent_status = "original_retained"
+        persistent_status = (
+            "original_intermittent" if has_gap else "original_retained"
+        )
     elif allele_freqs[0] == "." and allele_freqs[-1] != ".":
-        persistent_status = "new_persistent"
+        persistent_status = "new_intermittent" if has_gap else "new_persistent"
     elif allele_freqs[0] == "." and allele_freqs[-1] == ".":
         persistent_status = "new_transient"
     else:
         persistent_status = "unknown"
 
     first_appearance = (
-        samples[presence_absence.index("Y")] if "Y" in presence_absence else "None"
+        samples[first_present_idx] if first_present_idx is not None else "None"
     )
     last_appearance = (
-        samples[rindex(presence_absence, "Y")] if "Y" in presence_absence else "None"
+        samples[last_present_idx] if last_present_idx is not None else "None"
     )
 
     return {

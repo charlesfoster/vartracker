@@ -677,6 +677,61 @@ def test_prepare_variant_heatmap_matrix_applies_extended_filters():
     assert list(matrix.index) == ["S:D215G\n(A22206G)"]
 
 
+def test_prepare_variant_heatmap_matrix_only_persistent_includes_new_intermittent():
+    """--only-persistent must keep new_intermittent alongside new_persistent,
+    since both reached the final timepoint - only the path there differs."""
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "S",
+                "amino_acid_consequence": "D215G",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "persistence_status": "new_persistent",
+                "alt_freq": "0.0 / 0.6 / 0.7",
+                "samples": "P0 / P1 / P2",
+                "variant": "A22206G",
+                "start": 22206,
+            },
+            {
+                "gene": "S",
+                "amino_acid_consequence": "E484K",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "persistence_status": "new_intermittent",
+                "alt_freq": "0.0 / 0.6 / 0.7",
+                "samples": "P0 / P1 / P2",
+                "variant": "G23012A",
+                "start": 23012,
+            },
+            {
+                "gene": "S",
+                "amino_acid_consequence": "N501Y",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "persistence_status": "new_transient",
+                "alt_freq": "0.0 / 0.6 / 0.0",
+                "samples": "P0 / P1 / P2",
+                "variant": "A23063T",
+                "start": 23063,
+            },
+        ]
+    )
+
+    matrix = _prepare_variant_heatmap_matrix(
+        table,
+        ["P0", "P1", "P2"],
+        0.2,
+        0.2,
+        only_persistent=True,
+    )
+
+    assert set(matrix.index) == {"S:D215G\n(A22206G)", "S:E484K\n(G23012A)"}
+
+
 def test_process_joint_variants_only_adds_single_joint_prefix(tmp_path):
     csv_path = tmp_path / "results.csv"
     pd.DataFrame(

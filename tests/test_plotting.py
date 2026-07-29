@@ -142,6 +142,81 @@ def test_prepare_plot_inputs_and_filters():
     assert filtered_long["sample_number"].max() == 3
 
 
+def test_apply_shared_plot_filters_persistent_only_includes_new_intermittent():
+    """persistent_only must keep new_intermittent alongside new_persistent -
+    both are new variants present at the final timepoint, just differing in
+    whether presence was continuous along the way."""
+    table = pd.DataFrame(
+        [
+            {
+                "chrom": "segA",
+                "start": 23403,
+                "end": 23403,
+                "gene": "S",
+                "variant": "A23403G",
+                "amino_acid_consequence": "S:D614G",
+                "nsp_aa_change": "",
+                "type_of_variant": "snp",
+                "type_of_change": "missense",
+                "variant_status": "new",
+                "persistence_status": "new_persistent",
+                "presence_absence": "N / Y / Y / Y",
+                "alt_freq": "0.0 / 0.20 / 0.45 / 0.70",
+                "samples": "P0 / P1 / P2 / P3",
+                "sample_number": "0 / 1 / 2 / 3",
+                "per_sample_variant_qc": "P / P / P / P",
+                "reference": "",
+            },
+            {
+                "chrom": "segA",
+                "start": 23012,
+                "end": 23012,
+                "gene": "S",
+                "variant": "G23012A",
+                "amino_acid_consequence": "S:E484K",
+                "nsp_aa_change": "",
+                "type_of_variant": "snp",
+                "type_of_change": "missense",
+                "variant_status": "new",
+                "persistence_status": "new_intermittent",
+                "presence_absence": "N / Y / N / Y",
+                "alt_freq": "0.0 / 0.20 / 0.0 / 0.45",
+                "samples": "P0 / P1 / P2 / P3",
+                "sample_number": "0 / 1 / 2 / 3",
+                "per_sample_variant_qc": "P / P / P / P",
+                "reference": "",
+            },
+            {
+                "chrom": "segA",
+                "start": 23063,
+                "end": 23063,
+                "gene": "S",
+                "variant": "A23063T",
+                "amino_acid_consequence": "S:N501Y",
+                "nsp_aa_change": "",
+                "type_of_variant": "snp",
+                "type_of_change": "missense",
+                "variant_status": "new",
+                "persistence_status": "new_transient",
+                "presence_absence": "N / Y / N / N",
+                "alt_freq": "0.0 / 0.20 / 0.0 / 0.0",
+                "samples": "P0 / P1 / P2 / P3",
+                "sample_number": "0 / 1 / 2 / 3",
+                "per_sample_variant_qc": "P / P / P / P",
+                "reference": "",
+            },
+        ]
+    )
+
+    summary, long_df, _, _ = prepare_plot_inputs(table)
+    filtered_summary, _ = apply_shared_plot_filters(
+        summary, long_df, persistent_only=True
+    )
+
+    labels = {label.split(" (", 1)[0] for label in filtered_summary["variant_label"]}
+    assert labels == {"S:D614G", "S:E484K"}
+
+
 def test_auto_select_variants_prefers_literature_and_persistent():
     summary, _, _, _ = prepare_plot_inputs(_results_table())
 

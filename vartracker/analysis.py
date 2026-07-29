@@ -19,6 +19,7 @@ from matplotlib.patches import Rectangle
 import seaborn as sns
 from .constants import REF_GENE_LENGTHS, NSP_LENGTHS, NSPS
 from .core import get_logo
+from .vcf_processing import NEW_ENDS_PRESENT_STATUSES
 
 # Global configuration for plotting
 plt.rcdefaults()
@@ -938,7 +939,7 @@ def _prepare_variant_heatmap_matrix(
         if (
             only_persistent
             and str(getattr(row, "persistence_status", "")).strip().lower()
-            != "new_persistent"
+            not in NEW_ENDS_PRESENT_STATUSES
         ):
             continue
         if (

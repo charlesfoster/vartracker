@@ -1080,6 +1080,79 @@ def test_e2e_runs_snakemake_then_vcf(monkeypatch, tmp_path):
     assert modes_checked == ["e2e"]
 
 
+def _prepare_e2e_run(monkeypatch, tmp_path):
+    updated_csv = tmp_path / "samples_updated.csv"
+    vcf_out = tmp_path / "vcf.gz"
+    cov_out = tmp_path / "coverage.txt"
+    vcf_out.write_text("", encoding="utf-8")
+    cov_out.write_text("", encoding="utf-8")
+    updated_csv.write_text(
+        "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+        f"Sample1,0,,,,{vcf_out},{cov_out}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(main_module, "validate_dependencies", lambda mode="vcf": None)
+    monkeypatch.setattr(
+        main_module, "run_e2e_workflow", lambda **kwargs: str(updated_csv)
+    )
+    monkeypatch.setattr(main_module, "_run_vcf_command", lambda args: 0)
+
+    reads1 = tmp_path / "reads1.fastq"
+    reads2 = tmp_path / "reads2.fastq"
+    reads1.write_text("", encoding="utf-8")
+    reads2.write_text("", encoding="utf-8")
+    samples_csv = tmp_path / "reads.csv"
+    samples_csv.write_text(
+        "sample_name,sample_number,reads1,reads2,bam,vcf,coverage\n"
+        f"Sample1,0,{reads1},{reads2},,,\n",
+        encoding="utf-8",
+    )
+    return samples_csv
+
+
+def test_e2e_warns_when_primer_bed_missing(monkeypatch, tmp_path, capsys):
+    samples_csv = _prepare_e2e_run(monkeypatch, tmp_path)
+
+    exit_code = main_module.main(
+        [
+            "end-to-end",
+            str(samples_csv),
+            "--reference",
+            "ref.fasta",
+            "--outdir",
+            str(tmp_path / "results"),
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "no --primer-bed supplied" in captured.out
+
+
+def test_e2e_no_warning_when_primer_bed_supplied(monkeypatch, tmp_path, capsys):
+    samples_csv = _prepare_e2e_run(monkeypatch, tmp_path)
+    primer_bed = tmp_path / "primers.bed"
+    primer_bed.write_text("", encoding="utf-8")
+
+    exit_code = main_module.main(
+        [
+            "end-to-end",
+            str(samples_csv),
+            "--reference",
+            "ref.fasta",
+            "--primer-bed",
+            str(primer_bed),
+            "--outdir",
+            str(tmp_path / "results"),
+        ]
+    )
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    assert "no --primer-bed supplied" not in captured.out
+
+
 def test_e2e_dryrun_skips_vcf(monkeypatch, tmp_path_factory):
     reads1 = tmp_path_factory.mktemp("reads") / "reads1.fastq"
     reads2 = reads1.parent / "reads2.fastq"

@@ -22,6 +22,7 @@ from .analysis import (
     _resolve_variant_labels,
 )
 from .core import InputValidationError, ProcessingError
+from .vcf_processing import NEW_ENDS_PRESENT_STATUSES
 
 DEFAULT_TRAJECTORY_TOP_N = 12
 DEFAULT_LIFESPAN_TOP_N = 20
@@ -249,7 +250,9 @@ def prepare_plot_inputs(
     summary["duration"] = summary["last_seen"].fillna(0).astype(float) - summary[
         "first_seen"
     ].fillna(0).astype(float)
-    summary["is_persistent_new"] = summary["persistence_status"].eq("new_persistent")
+    summary["is_persistent_new"] = summary["persistence_status"].isin(
+        NEW_ENDS_PRESENT_STATUSES
+    )
     summary["is_nonsynonymous"] = (
         ~summary["type_of_change"].str.lower().str.contains("synonymous", na=False)
     )
@@ -308,7 +311,7 @@ def apply_shared_plot_filters(
 
     if persistent_only:
         filtered_summary = filtered_summary[
-            filtered_summary["persistence_status"].eq("new_persistent")
+            filtered_summary["persistence_status"].isin(NEW_ENDS_PRESENT_STATUSES)
         ]
 
     if new_only:
@@ -1242,7 +1245,7 @@ def _subset_collapsed_variants(
     if max_af is not None:
         subset = subset[subset["summary_af"] <= max_af]
     if persistent_only:
-        subset = subset[subset["persistence_status"].eq("new_persistent")]
+        subset = subset[subset["persistence_status"].isin(NEW_ENDS_PRESENT_STATUSES)]
     if new_only:
         subset = subset[subset["variant_status"].eq("new")]
     if subset.empty:

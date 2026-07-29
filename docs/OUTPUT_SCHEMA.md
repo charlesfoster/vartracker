@@ -24,13 +24,13 @@ Columns that encode per-sample values are slash-separated and ordered by the inp
 | type_of_variant | string | Variant type derived from the VCF entry. |  | snp, indel |
 | type_of_change | string | Functional change classification from bcftools csq. |  | synonymous, missense, frameshift, ... |
 | variant_status | string | Whether the variant is present in the first sample. |  | original, new |
-| persistence_status | string | Persistence class based on first and last sample presence. |  | original_retained, original_lost, new_persistent, new_transient |
+| persistence_status | string | Persistence class based on presence at the first and last sample, and whether presence was continuous in between. The '_intermittent' classes mean the variant was present at both the first/last (original) or reappeared by the last sample (new), but was absent from at least one sample in between. |  | original_retained, original_intermittent, original_lost, new_persistent, new_intermittent, new_transient |
 | presence_absence | string (slash-separated) | Per-sample presence (Y) or absence (N), ordered by input. |  | Y/N |
 | first_appearance | string | Sample name where the variant first appears. |  |  |
 | last_appearance | string | Sample name where the variant last appears. |  |  |
 | all_samples_pass_qc | boolean | True if every sample passes per-sample variant QC. |  | true, false |
 | proportion_samples_passing_qc | number | Proportion of samples passing per-sample variant QC. | fraction | 0-1 |
-| per_sample_variant_qc | string (slash-separated) | Per-sample QC flags (P/F) ordered by input. |  | P, F |
+| per_sample_variant_qc | string (slash-separated) | Per-sample QC flags (P/F) ordered by input. A sample fails ('F') when there is no variant-supporting read and site coverage is below --min-depth, i.e. when genuine absence of the variant cannot be distinguished from dropout/non-detection; 'P' means absence (or presence) was confidently called at that sample. |  | P, F |
 | aa1_total_properties | string | Physicochemical properties for the reference amino acid. |  | semicolon-separated properties |
 | aa2_total_properties | string | Physicochemical properties for the alternate amino acid. |  | semicolon-separated properties |
 | aa1_unique_properties | string | Properties unique to the reference amino acid. |  | semicolon-separated properties |
