@@ -75,6 +75,7 @@ from .schemas import (
 )
 from .data import parse_pokay as parse_pokay_module
 from .annotation_processing import (
+    ambiguous_gene_names,
     gene_lengths_from_gff3,
     validate_reference_and_annotation,
 )
@@ -2782,7 +2783,10 @@ def _process_files(
         os.path.join(args.outdir, "cumulative_mutations.pdf"),
     )
 
-    gene_table = generate_gene_table(table, gene_lengths)
+    ambiguous_genes = None
+    if gene_lengths is not None and getattr(args, "gff3", None):
+        ambiguous_genes = ambiguous_gene_names(args.gff3)
+    gene_table = generate_gene_table(table, gene_lengths, ambiguous_genes)
     plot_gene_table(gene_table, pname, args.outdir)
     plot_variant_turnover(
         *apply_shared_plot_filters(

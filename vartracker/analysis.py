@@ -282,13 +282,23 @@ def generate_cumulative_lineplot(table, pname, sample_number_list, outname):
 
 
 def generate_gene_table(
-    table: pd.DataFrame, gene_lengths: Dict[str, int] | None = None
+    table: pd.DataFrame,
+    gene_lengths: Dict[str, int] | None = None,
+    ambiguous_genes: set | None = None,
 ):
     """
     Generate gene-wise mutation statistics table.
 
     Args:
         table (pd.DataFrame): Variants table
+        gene_lengths (dict, optional): Per-gene CDS lengths, e.g. from
+            `gene_lengths_from_gff3`.
+        ambiguous_genes (set, optional): Gene names known (from the reference
+            annotation, e.g. via `ambiguous_gene_names`) to occur on more than
+            one contig/replicon. These are always split per-contig even if a
+            given results table only contains variants for one of the
+            colliding copies, so real data for the other copy is never
+            silently dropped when the gene-length scaffold is merged in.
 
     Returns:
         pd.DataFrame: Gene statistics table
@@ -353,15 +363,28 @@ def generate_gene_table(
 
         return pd.DataFrame(gene_result)
 
-    # Process original genes
+    # Process original genes. Genes sharing a name across more than one contig
+    # (e.g. bacterial plasmids reusing names like 'repA') are disambiguated by
+    # contig so their variant counts are never silently summed together; genes
+    # confined to a single contig keep their plain name, matching prior
+    # behaviour for single-contig/viral references and multi-segment genomes
+    # with unique per-segment gene names.
     result = []
     genes_in_table = table["gene"].unique()
+    gene_chrom_counts = (
+        table.groupby("gene")["chrom"].nunique() if "chrom" in table.columns else {}
+    )
+    known_ambiguous = ambiguous_genes or set()
 
     for gene in genes_in_table:
         if gene == "INTERGENIC":
             continue
-        df = table[table["gene"] == gene]
-        result.append(make_gene_rows(gene, df))
+        gene_df = table[table["gene"] == gene]
+        if gene in known_ambiguous or gene_chrom_counts.get(gene, 1) > 1:
+            for chrom, chrom_df in gene_df.groupby("chrom"):
+                result.append(make_gene_rows(f"{gene} ({chrom})", chrom_df))
+        else:
+            result.append(make_gene_rows(gene, gene_df))
 
     if include_nsps:
         table = table.copy()

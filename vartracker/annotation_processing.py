@@ -55,15 +55,27 @@ def _parse_attrs(attr: str) -> dict:
     return out
 
 
-def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
+def _parse_gene_cds_by_contig(
+    gff_path: str | Path,
+) -> Tuple[
+    Dict[Tuple[str, str], int],
+    Dict[Tuple[str, str], int],
+    Tuple[int, int] | None,
+    int | None,
+    int | None,
+]:
     """
-    Parse a GFF3 and return {gene_name: CDS_length}, plus 5'/3' UTR and INTERGENIC=1.
+    Parse a GFF3 and return per-(contig, gene) CDS lengths and first-start
+    positions, plus whole-genome bounds for UTR computation.
 
     Robust to feature order (e.g., CDS before mRNA). Prefers:
       1) CDS attribute 'gene'
       2) Parent=gene:<id> → gene 'Name'
       3) Parent=transcript:<id> → mRNA 'Name' or its parent gene 'Name'
       4) As last resort, protein_id/tx id (rare).
+
+    Shared by `gene_lengths_from_gff3` and `ambiguous_gene_names` so both draw
+    on the same single parse of the annotation.
     """
     gff_path = Path(gff_path)
 
@@ -71,10 +83,11 @@ def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
     gene_id_to_name: Dict[str, str] = {}  # gene-id -> gene symbol/name
     tx_id_to_gene_name: Dict[str, str] = {}  # transcript-id -> gene name
 
-    # Accumulators
-    gene_cds_bp: Dict[str, int] = defaultdict(int)
-    gene_first_start: Dict[str, int] = {}
-    pending_by_tx: Dict[str, List[tuple[int, int]]] = defaultdict(list)
+    # Accumulators, keyed by (seqid, gene_name) so identically-named genes on
+    # different contigs are never conflated.
+    gene_cds_bp: Dict[Tuple[str, str], int] = defaultdict(int)
+    gene_first_start: Dict[Tuple[str, str], int] = {}
+    pending_by_tx: Dict[str, List[Tuple[int, int, str]]] = defaultdict(list)
 
     # For UTR computation (whole-genome)
     seq_range: Tuple[int, int] | None = None
@@ -149,34 +162,94 @@ def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
                         gname = tx_id_to_gene_name.get(tid)
                         if not gname:
                             # Defer until after we see the mRNA
-                            pending_by_tx[tid].append((cds_len, start_i))
+                            pending_by_tx[tid].append((cds_len, start_i, seqid))
                             continue  # will add later once tx->gene is known
 
                 if not gname:
                     # Skip unresolvable CDS entries; they will be handled later
                     continue
 
-                gene_cds_bp[str(gname)] += cds_len
-                if gname is not None:
-                    current = gene_first_start.get(str(gname))
-                    gene_first_start[str(gname)] = (
-                        start_i if current is None else min(current, start_i)
-                    )
+                key = (seqid, str(gname))
+                gene_cds_bp[key] += cds_len
+                current = gene_first_start.get(key)
+                gene_first_start[key] = (
+                    start_i if current is None else min(current, start_i)
+                )
 
     # --- Resolve any pending CDS whose transcripts appeared after
-    for tid, lengths in pending_by_tx.items():
+    for tid, entries in pending_by_tx.items():
         gname = tx_id_to_gene_name.get(tid)
         if not gname:
             # Last resort: use the transcript id as a stand-in (or skip)
             gname = tid
         if not gname:
             continue
-        gene_cds_bp[str(gname)] += sum(length for length, _ in lengths)
-        if gname is not None:
-            current = gene_first_start.get(str(gname))
-            first_start = min(start for _, start in lengths)
-            gene_first_start[str(gname)] = (
-                first_start if current is None else min(current, first_start)
+        # All entries for a given transcript id share the same contig.
+        seqid = entries[0][2]
+        key = (seqid, str(gname))
+        gene_cds_bp[key] += sum(length for length, _, _ in entries)
+        current = gene_first_start.get(key)
+        first_start = min(start for _, start, _ in entries)
+        gene_first_start[key] = (
+            first_start if current is None else min(current, first_start)
+        )
+
+    return gene_cds_bp, gene_first_start, seq_range, first_cds_start, last_cds_end
+
+
+def ambiguous_gene_names(gff_path: str | Path) -> set[str]:
+    """
+    Return gene names that occur on more than one contig/replicon in a GFF3.
+
+    Useful for other per-gene aggregations (e.g. results-table gene summaries)
+    that need to disambiguate the same gene names vartracker's own
+    `gene_lengths_from_gff3` disambiguates, even for genes with no CDS-length
+    contribution in a particular downstream table.
+    """
+    gene_cds_bp, _, _, _, _ = _parse_gene_cds_by_contig(gff_path)
+    gname_to_seqids: Dict[str, set] = defaultdict(set)
+    for seqid, gname in gene_cds_bp:
+        gname_to_seqids[gname].add(seqid)
+    return {gname for gname, seqids in gname_to_seqids.items() if len(seqids) > 1}
+
+
+def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
+    """
+    Parse a GFF3 and return {gene_name: CDS_length}, plus 5'/3' UTR and INTERGENIC=1.
+
+    Gene names are keyed per-contig internally. If the same gene name occurs on
+    more than one contig/replicon (common for bacterial plasmids reusing names
+    like 'repA'), the returned keys are disambiguated as "<gene> (<contig>)" so
+    unrelated genes are never silently summed together. Gene names that occur
+    on only one contig are returned unqualified, matching prior behaviour.
+    """
+    (
+        gene_cds_bp,
+        gene_first_start,
+        seq_range,
+        first_cds_start,
+        last_cds_end,
+    ) = _parse_gene_cds_by_contig(gff_path)
+
+    # --- Collapse (seqid, gene) keys into final gene labels. Gene names that
+    # only ever appear on a single contig keep their plain name (unchanged
+    # behaviour for single-contig/viral references and multi-segment genomes
+    # with unique per-segment gene names). Names shared across contigs are
+    # disambiguated so their lengths are never summed together.
+    gname_to_seqids: Dict[str, set] = defaultdict(set)
+    for seqid, gname in gene_cds_bp:
+        gname_to_seqids[gname].add(seqid)
+
+    labelled_cds_bp: Dict[str, int] = defaultdict(int)
+    labelled_first_start: Dict[str, int] = {}
+    for (seqid, gname), length in gene_cds_bp.items():
+        label = gname if len(gname_to_seqids[gname]) == 1 else f"{gname} ({seqid})"
+        labelled_cds_bp[label] += length
+        start = gene_first_start.get((seqid, gname))
+        if start is not None:
+            current = labelled_first_start.get(label)
+            labelled_first_start[label] = (
+                start if current is None else min(current, start)
             )
 
     # --- Add UTRs if we have genome bounds
@@ -184,16 +257,17 @@ def gene_lengths_from_gff3(gff_path: str | Path) -> Dict[str, int]:
         seq_start, seq_end = seq_range
         five_utr = max(0, first_cds_start - seq_start)  # 1..first_cds_start-1
         three_utr = max(0, seq_end - last_cds_end)  # last_cds_end+1..end
-        gene_cds_bp["5' UTR"] = five_utr
-        gene_cds_bp["3' UTR"] = three_utr
+        labelled_cds_bp["5' UTR"] = five_utr
+        labelled_cds_bp["3' UTR"] = three_utr
 
     # Conventional placeholder
-    gene_cds_bp["INTERGENIC"] = 1
+    labelled_cds_bp["INTERGENIC"] = 1
 
     ordered = {
-        gene: gene_cds_bp[gene]
+        gene: labelled_cds_bp[gene]
         for gene in sorted(
-            gene_cds_bp.keys(), key=lambda g: gene_first_start.get(g, float("inf"))
+            labelled_cds_bp.keys(),
+            key=lambda g: labelled_first_start.get(g, float("inf")),
         )
     }
 

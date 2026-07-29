@@ -11,7 +11,91 @@ from vartracker.analysis import (
     _prepare_variant_heatmap_matrix,
     process_joint_variants,
     generate_variant_heatmap,
+    generate_gene_table,
 )
+
+
+def _gene_table_rows(gene_table, gene):
+    rows = gene_table[gene_table["gene"] == gene]
+    return dict(zip(rows["type"], rows["number"]))
+
+
+def test_generate_gene_table_keeps_single_contig_genes_unqualified():
+    """Baseline: single-contig data (e.g. viral references) is unaffected."""
+    table = pd.DataFrame(
+        {
+            "gene": ["S", "S", "N"],
+            "chrom": ["NC_045512.2", "NC_045512.2", "NC_045512.2"],
+            "type_of_change": ["missense", "missense", "synonymous"],
+            "presence_absence": ["NY", "NY", "YY"],
+        }
+    )
+
+    gene_table = generate_gene_table(table, gene_lengths={"S": 3822, "N": 1260})
+
+    assert set(gene_table["gene"]) == {"S", "N"}
+    assert _gene_table_rows(gene_table, "S")["total"] == 2
+
+
+def test_generate_gene_table_splits_colliding_gene_names_across_contigs():
+    """Same gene name on chromosome + plasmid must not be summed together."""
+    table = pd.DataFrame(
+        {
+            "gene": ["repA", "repA", "dnaA"],
+            "chrom": ["chrom1", "plasmid1", "chrom1"],
+            "type_of_change": ["missense", "missense", "missense"],
+            "presence_absence": ["NY", "NY", "NY"],
+        }
+    )
+
+    gene_table = generate_gene_table(
+        table,
+        gene_lengths={
+            "dnaA": 300,
+            "repA (chrom1)": 201,
+            "repA (plasmid1)": 150,
+        },
+    )
+
+    genes_present = set(gene_table["gene"])
+    assert "repA (chrom1)" in genes_present
+    assert "repA (plasmid1)" in genes_present
+    assert "repA" not in genes_present
+
+    # Each contig's copy of repA should retain its own count, not a merged total.
+    assert _gene_table_rows(gene_table, "repA (chrom1)")["total"] == 1
+    assert _gene_table_rows(gene_table, "repA (plasmid1)")["total"] == 1
+
+
+def test_generate_gene_table_ambiguous_genes_param_prevents_data_loss():
+    """A gene flagged ambiguous by the annotation, but with variants on only
+    one contig in this particular table, must still surface under its
+    qualified label so it matches the gene-length scaffold and isn't dropped
+    by the scaffold merge."""
+    table = pd.DataFrame(
+        {
+            "gene": ["repA"],
+            "chrom": ["chrom1"],
+            "type_of_change": ["missense"],
+            "presence_absence": ["NY"],
+        }
+    )
+
+    gene_table = generate_gene_table(
+        table,
+        gene_lengths={
+            "repA (chrom1)": 201,
+            "repA (plasmid1)": 150,
+        },
+        ambiguous_genes={"repA"},
+    )
+
+    genes_present = set(gene_table["gene"])
+    assert "repA (chrom1)" in genes_present
+    assert "repA" not in genes_present
+    assert _gene_table_rows(gene_table, "repA (chrom1)")["total"] == 1
+    # The scaffold still surfaces the other contig's copy with a zero count.
+    assert _gene_table_rows(gene_table, "repA (plasmid1)")["total"] == 0
 
 
 def test_search_literature_handles_nullable_boolean_masks(tmp_path):
