@@ -38,6 +38,7 @@ from .analysis import (
     generate_cumulative_lineplot,
     generate_gene_table,
     plot_gene_table,
+    parse_plot_genes_arg,
     generate_variant_heatmap,
     search_literature,
 )
@@ -783,6 +784,31 @@ def _configure_vcf_parser(
         type=int,
         help="Only analyse samples with sample_number less than or equal to this value",
         default=None,
+    )
+    analysis_group.add_argument(
+        "--max-plot-genes",
+        action="store",
+        type=int,
+        default=30,
+        help=(
+            "Cap the gene-wise summary FIGURE to the top N genes, ranked by "
+            "number of newly emerged variants (total variants used as a "
+            "tiebreak). Does not affect the tabular/TSV output, which always "
+            "includes every annotated gene. Overridden by --plot-genes. "
+            "(default: 30)"
+        ),
+    )
+    analysis_group.add_argument(
+        "--plot-genes",
+        action="store",
+        default=None,
+        help=(
+            "Comma-separated gene names, or a path to a file with one gene "
+            "name per line, to show on the gene-wise summary FIGURE. "
+            "Overrides --max-plot-genes. Genes absent from the reference "
+            "annotation or with no variants in this dataset are skipped "
+            "with a warning."
+        ),
     )
     analysis_group.add_argument(
         "--literature-csv",
@@ -2786,8 +2812,18 @@ def _process_files(
     ambiguous_genes = None
     if gene_lengths is not None and getattr(args, "gff3", None):
         ambiguous_genes = ambiguous_gene_names(args.gff3)
+    plot_genes = None
+    if getattr(args, "plot_genes", None):
+        plot_genes = parse_plot_genes_arg(args.plot_genes)
+
     gene_table = generate_gene_table(table, gene_lengths, ambiguous_genes)
-    plot_gene_table(gene_table, pname, args.outdir)
+    plot_gene_table(
+        gene_table,
+        pname,
+        args.outdir,
+        max_plot_genes=getattr(args, "max_plot_genes", 30),
+        plot_genes=plot_genes,
+    )
     plot_variant_turnover(
         *apply_shared_plot_filters(
             *prepare_plot_inputs(table)[:2],

@@ -23,6 +23,7 @@ A bioinformatics pipeline to summarise variants called against a reference in a 
 - [Quick Start](#quick-start)
 - [Output](#output)
 - [What does vartracker do?](#what-does-vartracker-do)
+- [Limitations](#limitations)
 - [Citation](#citation)
 - [License](#license)
 - [Contributing](#contributing)
@@ -311,6 +312,8 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 - `vartracker vcf` – accepts core analysis options such as `--min-snv-freq`, `--min-indel-freq`,
   `--allele-frequency-tag`, `--multiallelic-overflow`, `--name`, `--outdir`, `--sample-cap`, `--manifest-level`, and literature controls
   (`--search-pokay`, `--literature-csv`). Use `--test` to run the bundled smoke test.
+  `--max-plot-genes` and `--plot-genes` control the gene-wise summary figure only (see
+  [Limitations](#limitations)); the tabular/TSV output always includes every annotated gene.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
   `--snakemake-outdir`, `--cores`, `--snakemake-dryrun`, `--verbose`, `--redo`,
   `--rulegraph`, `--primer-bed`, `--lofreq-primer-rescue`, `--consensus-snp-min-af`,
@@ -600,6 +603,31 @@ The pipeline performs the following analysis:
 
 5. **Visualization**: Generates plots for mutation accumulation and gene-wise statistics
 6. **Functional Annotation**: (optional) Searches against literature databases for known functional impacts
+
+## Limitations
+
+vartracker was designed for viral pathogens with small, compact genomes (SARS-CoV-2: ~30 kb,
+12 genes). The underlying analysis - VCF standardisation, merging, annotation, and
+original/new/persistent/transient classification - scales to larger genomes without modification.
+The practical constraint on larger genomes (e.g. bacterial pathogens, which can carry thousands of
+annotated genes) is **visualisation**, not computation:
+
+- The gene-wise summary figure (`mutations_per_gene.pdf`) plots one bar per gene per panel. On a
+  genome with thousands of annotated genes this becomes unreadable regardless of how many variants
+  are actually present, because the plot iterates over every annotated gene, not just genes that
+  carry a variant.
+- By default, the figure is capped to the top 30 genes, ranked by number of newly emerged variants
+  (ties broken by total variant count), via `--max-plot-genes`. Use `--plot-genes` to instead name
+  an explicit set of genes to plot. **This cap applies to the figure only** - the tabular/TSV output
+  always contains every annotated gene, so no data is discarded by this option.
+- When the figure is truncated, this is stated directly on the figure itself (e.g. "top 30 of 412
+  genes with variants"); if nothing was truncated, no such note is shown.
+
+Separately, the bundled `pokay` functional-annotation database
+(see [Using Literature Database](#using-literature-database)) is specific to SARS-CoV-2 mutations
+and is not applied to, or meaningful for, other pathogens. A custom literature CSV following the
+same schema can be supplied via `--literature-csv` for other organisms; see
+[Building a custom literature database for other pathogens](#building-a-custom-literature-database-for-other-pathogens).
 
 ## Citation
 

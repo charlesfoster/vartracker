@@ -423,29 +423,180 @@ def generate_gene_table(
     return gene_table
 
 
-def plot_gene_table(gene_table, pname, outdir):
+def parse_plot_genes_arg(value: str) -> List[str]:
+    """
+    Parse a `--plot-genes` CLI value into a gene name list.
+
+    `value` is either a comma-separated list of gene names, or a path to a
+    file with one gene name per line (blank lines and lines starting with
+    `#` are ignored). Order is preserved and duplicates are dropped.
+    """
+    if os.path.isfile(value):
+        with open(value, encoding="utf-8") as handle:
+            raw_values = [
+                line.strip()
+                for line in handle
+                if line.strip() and not line.strip().startswith("#")
+            ]
+    else:
+        raw_values = [token.strip() for token in value.split(",") if token.strip()]
+
+    seen: set = set()
+    genes: List[str] = []
+    for gene in raw_values:
+        if gene not in seen:
+            seen.add(gene)
+            genes.append(gene)
+    return genes
+
+
+def select_genes_for_plot(
+    gene_table: pd.DataFrame,
+    max_plot_genes: Optional[int] = 30,
+    plot_genes: Optional[List[str]] = None,
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    """
+    Select which genes appear on the gene-wise summary FIGURE.
+
+    This is presentation-layer only: it never modifies `gene_table` itself
+    (the tabular/TSV output built by `generate_gene_table` always contains
+    every annotated gene), it only decides which subset is handed to
+    `plot_gene_table` for rendering.
+
+    When `plot_genes` is not given, and the number of annotated genes
+    already fits within `max_plot_genes`, every gene is kept (this is what
+    makes SARS-CoV-2-scale runs, with their handful of genes, identical to
+    plotting with no cap at all). Otherwise the figure is limited to genes
+    that carry at least one variant, ranked by number of newly emerged
+    variants (total variants as tiebreak) - ranking by total variants alone
+    would surface long genes or reference/sample divergence rather than
+    anything that changed over the longitudinal series.
+
+    Args:
+        gene_table: Output of `generate_gene_table`.
+        max_plot_genes: Cap on number of genes shown, or None for no cap.
+        plot_genes: Explicit gene names to show; overrides `max_plot_genes`.
+            Names absent from the reference annotation or with no variants
+            in this dataset are dropped with a warning.
+
+    Returns:
+        (plot_table, subtitle): `plot_table` is the subset of `gene_table`
+        to plot (original gene order preserved); `subtitle` describes the
+        truncation applied (e.g. "top 30 of 412 genes with variants"), or
+        None if nothing was truncated.
+    """
+    if gene_table.empty:
+        return gene_table, None
+
+    genes_in_order = list(dict.fromkeys(gene_table["gene"]))
+    totals = gene_table.loc[gene_table["type"] == "total"].set_index("gene")["number"]
+    variant_genes = [g for g in genes_in_order if totals.get(g, 0) > 0]
+
+    if plot_genes:
+        annotation_genes = set(genes_in_order)
+        variant_gene_set = set(variant_genes)
+        valid: List[str] = []
+        for gene in plot_genes:
+            if gene not in annotation_genes:
+                print(
+                    f"Warning: --plot-genes gene '{gene}' was not found in the "
+                    "reference annotation; skipping."
+                )
+                continue
+            if gene not in variant_gene_set:
+                print(
+                    f"Warning: --plot-genes gene '{gene}' has no variants in "
+                    "this dataset; skipping."
+                )
+                continue
+            valid.append(gene)
+
+        if not valid:
+            raise ValueError(
+                "None of the genes named in --plot-genes are valid: each gene "
+                "must be present in the reference annotation and carry at "
+                "least one variant in this dataset."
+            )
+
+        selected = set(valid)
+        plot_table = gene_table[gene_table["gene"].isin(selected)]
+        return plot_table, None
+
+    if max_plot_genes is None:
+        return gene_table, None
+    if max_plot_genes <= 0:
+        raise ValueError(
+            f"--max-plot-genes must be a positive integer, got {max_plot_genes}."
+        )
+
+    if len(genes_in_order) <= max_plot_genes:
+        return gene_table, None
+
+    n_with_variants = len(variant_genes)
+    if n_with_variants <= max_plot_genes:
+        plot_table = gene_table[gene_table["gene"].isin(variant_genes)]
+        return plot_table, None
+
+    new_counts = gene_table.loc[gene_table["type"] == "new_mutations"].set_index("gene")[
+        "number"
+    ]
+    ranked = sorted(
+        variant_genes, key=lambda g: (-new_counts.get(g, 0), -totals.get(g, 0))
+    )
+    selected = set(ranked[:max_plot_genes])
+    plot_table = gene_table[gene_table["gene"].isin(selected)]
+    subtitle = f"top {max_plot_genes} of {n_with_variants} genes with variants"
+    return plot_table, subtitle
+
+
+def plot_gene_table(
+    gene_table,
+    pname,
+    outdir,
+    max_plot_genes: Optional[int] = 30,
+    plot_genes: Optional[List[str]] = None,
+):
     """
     Plot gene-wise mutation statistics.
 
     Args:
-        gene_table (pd.DataFrame): Gene statistics table
+        gene_table (pd.DataFrame): Gene statistics table (all annotated
+            genes; the tabular/TSV output is unaffected by this function).
         pname (str): Project name for plot title
         outdir (str): Output directory
+        max_plot_genes: Cap on number of genes shown in the FIGURE, ranked
+            by newly emerged variants (default: 30). Does not affect any
+            other output.
+        plot_genes: Explicit gene names to show in the FIGURE; overrides
+            `max_plot_genes`.
     """
     try:
+        plot_table, subtitle = select_genes_for_plot(
+            gene_table, max_plot_genes=max_plot_genes, plot_genes=plot_genes
+        )
+
         g = sns.catplot(
             x="gene",
             y="number",
             col="type",
             col_wrap=3,
-            data=gene_table,
+            data=plot_table,
             kind="bar",
             height=4,
             aspect=1.2,
         )
-        g.set_axis_labels("", "Number of Mutations")
+        x_label = (
+            "Gene (top genes ranked by newly emerged variants; "
+            "total variants as tiebreak)"
+            if subtitle
+            else ""
+        )
+        g.set_axis_labels(x_label, "Number of Mutations")
         g.fig.subplots_adjust(top=0.9)
-        g.fig.suptitle(f"{pname}", weight="bold")
+        title = f"{pname}"
+        if subtitle:
+            title = f"{title}\n{subtitle}" if title else subtitle
+        g.fig.suptitle(title, weight="bold")
 
         # Rotate labels by 90 degrees
         for ax in g.axes.flat:
@@ -453,7 +604,7 @@ def plot_gene_table(gene_table, pname, outdir):
                 label.set_rotation(90)
 
         # Make subplot titles nicer
-        for ax, title in zip(g.fig.axes, list(gene_table["type"].unique())):
+        for ax, title in zip(g.fig.axes, list(plot_table["type"].unique())):
             # Convert title to string to handle numeric values and NaN
             if pd.isna(title):
                 title_str = "None"
