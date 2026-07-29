@@ -326,12 +326,12 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 
 Consequence-calling note:
 - Vartracker keeps distinct ALT alleles at the same position separate during preprocessing, then rejoins them immediately before `bcftools csq` so codon-level consequences can still be inferred correctly.
-- If more than two ALT alleles remain present in a single sample at one genomic position after frequency filtering, vartracker defaults to stopping with an informative error before `bcftools csq`. This is the safest behavior and the default `--multiallelic-overflow error` mode.
+- If more than two ALT alleles remain present in a single sample at one genomic position after frequency filtering, vartracker defaults to stopping with an informative error before `bcftools csq`. This is the safest behaviour and the default `--multiallelic-overflow error` mode.
 - `--multiallelic-overflow drop-lowest-af` continues by removing the lowest-frequency retained ALT allele(s) for the affected sample before `bcftools csq`, and prints a warning describing the site and the dropped allele(s).
 - `--multiallelic-overflow skip-site` continues by skipping consequence calling for the affected site entirely, leaving those variants in the results as unannotated rows and printing a warning describing the site.
 
 Heatmap filtering:
-- `vcf`, `bam`, and `end-to-end` always write the default heatmap. To customize heatmap content after a run, use `vartracker plot heatmap results.csv [options]`.
+- `vcf`, `bam`, and `end-to-end` always write the default heatmap. To customise heatmap content after a run, use `vartracker plot heatmap results.csv [options]`.
 - By default, all consequence classes are included except joint variants. Use `--include-joint` to show joint variants.
 - `--aa-exclude`: comma-separated `type_of_change` patterns to exclude. Wildcards are supported.
 - `--aa-include`: comma-separated `type_of_change` patterns to include.
@@ -371,7 +371,7 @@ Genome plot options:
 - `--gene`: zoom to a single gene region.
 - `--aa-scale`: with `--gene`, use amino-acid coordinates on the x-axis.
 - `--cds-scale`: with `--gene`, use CDS-relative nucleotide coordinates on the x-axis.
-- `--focus-coords`: highlight nucleotide or amino-acid coordinate ranges, depending on the current x-axis mode. Separate color groups with `;`, ranges within a group with `,`, and optionally prefix a group with `Name:`.
+- `--focus-coords`: highlight nucleotide or amino-acid coordinate ranges, depending on the current x-axis mode. Separate colour groups with `;`, ranges within a group with `,`, and optionally prefix a group with `Name:`.
 - `--focus-region-file`: read named focus region groups from a `.json`, `.csv`, or `.tsv` file for an inset legend.
 - `--show-intersections`: add a compact `Region | Variant` table below the genome plot for highlighted-region hits.
 - In the genome plot, undetected samples are rendered at the detection threshold rather than zero; by default this floor is `0.03`, or `--min-af` if supplied, and the dashed guide line follows that same threshold.
@@ -429,6 +429,41 @@ vartracker [mode] input_data.csv --literature-csv pokay_database.csv -o results/
 ```
    Alternatively, pass `--search-pokay` to automatically download and search
    against the Pokay SARS-CoV-2 literature database.
+
+#### Building a custom literature database for other pathogens
+
+`--search-pokay` only covers SARS-CoV-2. For other pathogens, supply your own CSV via
+`--literature-csv`. Variant lookup during vartracker analysis is based on a CSV-format file that
+is either generated automatically (`--search-pokay`) or supplied by the user (`--literature-csv
+<file>`). The expected structure of the file is described using the `vartracker schema literature`
+command. In brief, after deriving appropriate information from the scientific literature, users
+can create their own lookup table by creating a new CSV file whereby each row corresponds to a
+variant of interest, with `gene` and `mutation` required and `category`, `information`, and
+`reference` recommended:
+
+- **`gene`**: must exactly match (case-sensitive) the gene/product name assigned to that variant
+  by `bcftools csq` using the GFF3/GenBank annotation supplied via `--gff3`. For non-SARS-CoV-2
+  pathogens this is simply the gene name as it appears in your annotation file — vartracker's
+  SARS-CoV-2-specific remapping of `ORF1ab` into individual `nsp1`–`nsp16` names does not apply
+  outside SARS-CoV-2, so for other pathogens use the gene names exactly as they appear in your
+  GFF3.
+- **`mutation`**: the amino acid consequence in short-hand notation *without* a gene prefix (e.g.
+  `D614G`, not `S:D614G`). Each row describes a single mutation; if you have information on
+  several mutations in the same gene, add one row per mutation. Note that matching is done via
+  substring containment on this column, so avoid overly short or ambiguous notations that could
+  unintentionally match unrelated variants (e.g. a bare position number).
+- **`category`**: a free-text label used to group/colour variants in output tables and the
+  heatmap. There's no fixed vocabulary — choose categories meaningful for your pathogen (e.g.
+  "resistance", "immune_escape", "homoplasy").
+- **`information`**: free-text description of the mutation's putative effect, drawn from the
+  literature.
+- **`reference`**: one or more supporting DOIs or URLs, semicolon-delimited if there are multiple.
+
+A minimal template with this exact structure is provided at
+`test_data/mock_literature/mock_literature.csv`; the SARS-CoV-2-specific `pokay_database.csv`
+generated by `--search-pokay` follows the same schema and can also be used as a real-world
+formatting reference, bearing in mind its `ORF1ab`/`nsp` gene naming is SARS-CoV-2-specific and
+shouldn't be copied for other pathogens.
 
 ### Command Line Reference
 
@@ -552,7 +587,7 @@ vartracker schema literature
 
 The pipeline performs the following analysis:
 
-1. **VCF Standardization**: Normalizes and standardizes input VCF files, preserving distinct ALT alleles at the same genomic position
+1. **VCF Standardisation**: Normalises and standardises input VCF files, preserving distinct ALT alleles at the same genomic position
 2. **Variant Merging**: Combines all longitudinal samples
 3. **Annotation**: Adds amino acid consequences using `bcftools csq` on the merged VCF so sample-specific joint consequences are inferred from each sample's surviving ALT combination
 4. **Comprehensive Analysis**: For each variant, determines:
