@@ -189,7 +189,11 @@ def _add_heatmap_option_arguments(
         action="store_true",
         default=False,
         dest="heatmap_include_joint",
-        help="Include joint variants in heatmaps (default: exclude them)",
+        help=(
+            "Also show non-canonical joint/compound annotation-group rows in "
+            "heatmaps (a variant's canonical row is always shown by default, "
+            "even if joint)"
+        ),
     )
     add_legacy("include-joint", "heatmap_include_joint", action="store_true")
     group.add_argument(
@@ -749,6 +753,24 @@ def _configure_vcf_parser(
         help=(
             "How to handle sites where more than two ALT alleles remain present in "
             "one sample after filtering (default: error)"
+        ),
+    )
+    analysis_group.add_argument(
+        "--local-csq",
+        action="store_true",
+        default=False,
+        help=(
+            "Pass bcftools csq the -l/--local-csq flag, so each variant is "
+            "annotated on its own rather than jointly with nearby co-occurring "
+            "variants ('joint_*' consequence types). Off by default, since "
+            "joint calling is the correct behaviour for genuinely linked "
+            "variants (e.g. adjacent-codon changes on the same haplotype). "
+            "Consider enabling this for datasets with many unphased, "
+            "sub-consensus variants clustered in the same gene, where "
+            "bcftools has no genotype evidence that co-occurring variants are "
+            "actually on the same haplotype and joint calling can otherwise "
+            "fragment a single variant's presence/absence trajectory across "
+            "samples."
         ),
     )
     analysis_group.add_argument(
@@ -1510,6 +1532,21 @@ def _add_plot_heatmap_subparser(subparsers):
     )
     _add_heatmap_option_arguments(
         heatmap_group, prefix="", add_legacy_prefixed_aliases=True
+    )
+    output_group = parser.add_argument_group("Output")
+    output_group.add_argument(
+        "--out",
+        default=None,
+        help=(
+            "Write the heatmap using this path as the base name (extension, if "
+            "any, is ignored) - e.g. --out plots/myheatmap writes "
+            "plots/myheatmap.pdf and plots/myheatmap.html"
+        ),
+    )
+    output_group.add_argument(
+        "--outdir",
+        default=None,
+        help="Output directory for heatmap files (default: beside results.csv)",
     )
     parser.set_defaults(handler=_run_plot_heatmap_command)
 
@@ -2534,7 +2571,15 @@ def _run_plot_heatmap_command(args):
         if not results_csv.exists():
             raise InputValidationError(f"Results CSV not found: {results_csv}")
 
-        outdir = results_csv.parent
+        filename_stem = "variant_allele_frequency_heatmap"
+        if args.out:
+            out_path = Path(args.out).expanduser().resolve()
+            outdir = out_path.parent
+            filename_stem = out_path.stem or filename_stem
+        elif args.outdir:
+            outdir = Path(args.outdir).expanduser().resolve()
+        else:
+            outdir = results_csv.parent
         outdir.mkdir(parents=True, exist_ok=True)
 
         table = pd.read_csv(results_csv, keep_default_na=False)
@@ -2602,9 +2647,13 @@ def _run_plot_heatmap_command(args):
             plot_title=args.title,
             literature_hits=literature_df,
             literature_table_path=literature_path,
+            filename_stem=filename_stem,
             **_collect_heatmap_kwargs(args),
         )
-        print(f"\nFinished: find results in {outdir}\n")
+        print(
+            f"\nFinished: wrote {outdir / f'{filename_stem}.pdf'} and "
+            f"{outdir / f'{filename_stem}.html'}\n"
+        )
         return 0
     except (InputValidationError, ProcessingError) as exc:
         print(f"\nERROR: {exc}\n")
@@ -2784,6 +2833,7 @@ def _process_files(
             args.gff3,
             args.debug,
             args.multiallelic_overflow,
+            local_csq=args.local_csq,
         )
 
         # Process VCF and extract variants
@@ -2898,9 +2948,9 @@ def _process_files(
 
     persistent_mutations = table[
         table.persistence_status.isin(NEW_ENDS_PRESENT_STATUSES)
-    ][
-        ["gene", "variant", "amino_acid_consequence", "nsp_aa_change"]
-    ].reset_index(drop=True)
+    ][["gene", "variant", "amino_acid_consequence", "nsp_aa_change"]].reset_index(
+        drop=True
+    )
     persistent_mutations.to_csv(
         os.path.join(args.outdir, "persistent_new_mutations.csv"), index=None
     )

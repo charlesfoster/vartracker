@@ -11,7 +11,10 @@ import pytest
 import seaborn as sns
 
 from vartracker.analysis import (
+    _build_variant_key,
     _heatmap_figure_size,
+    disambiguate_base_label,
+    find_colliding_base_labels,
     search_literature,
     _prepare_variant_heatmap_matrix,
     process_joint_variants,
@@ -19,6 +22,7 @@ from vartracker.analysis import (
     generate_gene_table,
     plot_gene_table,
     parse_plot_genes_arg,
+    select_canonical_row_positions,
     select_genes_for_plot,
 )
 
@@ -600,6 +604,74 @@ def test_prepare_variant_heatmap_matrix_excludes_wildcard_consequence_types():
     assert list(matrix.index) == ["S:N501Y\n(A23063T)"]
 
 
+def test_prepare_variant_heatmap_matrix_disambiguates_colliding_base_labels():
+    """Two genuinely different variants that render to the same (truncated)
+    base label - a real bcftools-csq artefact on joint-called bacterial data
+    - must not collapse into a single heatmap row. A third, non-colliding
+    variant must come out byte-identical to plain `_resolve_variant_labels`
+    output, i.e. no unwanted disambiguation suffix."""
+    long_aa = "CLLLDEFGHIJKLMNOPQRPA"  # 21 chars: long enough to truncate
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "PA3025",
+                "amino_acid_consequence": long_aa,
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "alt_freq": "0.6",
+                "samples": "P0",
+                "variant": "C100T",
+                "start": 100,
+            },
+            {
+                "gene": "PA3025",
+                "amino_acid_consequence": long_aa,
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "alt_freq": "0.7",
+                "samples": "P0",
+                "variant": "C200A",
+                "start": 200,
+            },
+            {
+                "gene": "PA1000",
+                "amino_acid_consequence": "D50G",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "alt_freq": "0.8",
+                "samples": "P0",
+                "variant": "A300G",
+                "start": 300,
+            },
+        ]
+    )
+
+    matrix = _prepare_variant_heatmap_matrix(table, ["P0"], 0.0, 0.0)
+
+    head = long_aa[:10]
+    tail = long_aa[-10:]
+    middle = len(long_aa) - 20
+    truncated = f"{head}+{middle}{tail}" if middle > 0 else long_aa
+
+    labels = list(matrix.index)
+    colliding_labels = [label for label in labels if f"PA3025:{truncated}" in label]
+
+    # Both distinct variants survive (previously the second was silently
+    # dropped by `drop_duplicates(subset=["base_label"])`), and their
+    # displayed labels differ from one another.
+    assert len(colliding_labels) == 2
+    assert colliding_labels[0] != colliding_labels[1]
+    assert any("@100" in label for label in colliding_labels)
+    assert any("@200" in label for label in colliding_labels)
+
+    # The non-colliding variant is untouched: identical to what
+    # `_resolve_variant_labels` alone would produce.
+    assert "PA1000:D50G\n(A300G)" in labels
+
+
 def test_prepare_variant_heatmap_matrix_applies_extended_filters():
     table = pd.DataFrame(
         [
@@ -732,6 +804,71 @@ def test_prepare_variant_heatmap_matrix_only_persistent_includes_new_intermitten
     assert set(matrix.index) == {"S:D215G\n(A22206G)", "S:E484K\n(G23012A)"}
 
 
+def test_prepare_variant_heatmap_matrix_default_includes_canonical_joint_only_variant():
+    """When every row for a variant is joint, the default (`include_joint=False`)
+    heatmap must not silently drop it entirely - its (only, hence canonical)
+    row is exempted from the implicit joint exclusion."""
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "PA1199",
+                "amino_acid_consequence": "D50G",
+                "nsp_aa_change": "",
+                "type_of_change": "joint_missense",
+                "type_of_variant": "snp",
+                "alt_freq": "0.6",
+                "samples": "P0",
+                "variant": "A100G",
+                "start": 100,
+            },
+        ]
+    )
+
+    matrix = _prepare_variant_heatmap_matrix(table, ["P0"], 0.0, 0.0)
+
+    assert list(matrix.index) == ["PA1199:D50G\n(A100G)"]
+
+
+def test_prepare_variant_heatmap_matrix_default_hides_noncanonical_joint_fragment():
+    """A variant with both a canonical (non-joint) row and a joint fragment
+    row must still hide the joint fragment by default - the canonical-row
+    exemption only rescues variants whose ONLY row is joint, it must not
+    let every joint row through."""
+    table = pd.DataFrame(
+        [
+            {
+                "gene": "S",
+                "amino_acid_consequence": "D50G",
+                "nsp_aa_change": "",
+                "type_of_change": "missense",
+                "type_of_variant": "snp",
+                "presence_absence": "Y / Y / Y",
+                "alt_freq": "0.5 / 0.6 / 0.7",
+                "samples": "P0 / P1 / P2",
+                "variant": "A100G",
+                "start": 100,
+            },
+            {
+                "gene": "S",
+                "amino_acid_consequence": "D50G+X60Y",
+                "nsp_aa_change": "",
+                "type_of_change": "joint_missense",
+                "type_of_variant": "snp",
+                "presence_absence": "N / N / Y",
+                "alt_freq": "0.0 / 0.0 / 0.9",
+                "samples": "P0 / P1 / P2",
+                "variant": "A100G",
+                "start": 100,
+            },
+        ]
+    )
+
+    matrix = _prepare_variant_heatmap_matrix(table, ["P0", "P1", "P2"], 0.0, 0.0)
+
+    assert list(matrix.index) == ["S:D50G\n(A100G)"]
+    assert matrix.loc["S:D50G\n(A100G)", "P2"] == 0.7
+
+
 def test_process_joint_variants_only_adds_single_joint_prefix(tmp_path):
     csv_path = tmp_path / "results.csv"
     pd.DataFrame(
@@ -839,6 +976,40 @@ def test_process_joint_variants_matches_main_row_by_presence_pattern(tmp_path):
 
     assert result.loc[2, "amino_acid_consequence"] == "K2V"
     assert result.loc[2, "type_of_change"] == "joint_missense"
+
+
+def test_process_joint_variants_flags_compound_row_without_at_pointer(tmp_path):
+    """A row whose own `bcsq_nt_notation` is genuinely compound (multiple
+    '+'-joined `pos ref>alt` terms) must be flagged joint even when no
+    `@`-pointer row in the table points at it - the one-to-one `@`-pointer
+    matching only ever touches one sibling row per position, so a compound
+    sibling that nothing points to would otherwise be missed entirely."""
+    csv_path = tmp_path / "results.csv"
+    pd.DataFrame(
+        [
+            {
+                "start": 100,
+                "gene": "PA3025",
+                "amino_acid_consequence": "CLLL",
+                "nsp_aa_change": "",
+                "bcsq_nt_notation": "100A>T+150C>G",
+                "bcsq_aa_notation": "p.CLLL",
+                "aa1_total_properties": "",
+                "aa2_total_properties": "",
+                "aa1_unique_properties": "",
+                "aa2_unique_properties": "",
+                "aa1_weight": "",
+                "aa2_weight": "",
+                "weight_difference": "",
+                "type_of_change": "missense",
+            },
+        ]
+    ).to_csv(csv_path, index=False)
+
+    result = process_joint_variants(str(csv_path))
+
+    assert bool(result.loc[0, "joint_variant"]) is True
+    assert result.loc[0, "type_of_change"] == "joint_missense"
 
 
 def test_process_joint_variants_is_order_invariant_for_overlapping_gene_rows(tmp_path):
@@ -1013,3 +1184,93 @@ def test_heatmap_figure_size_enforces_minimum_row_height():
 
     assert width == 4.0
     assert height == pytest.approx(5.2)
+
+
+def test_select_canonical_row_positions_prefers_union_over_non_joint():
+    """When every row for a variant is joint, the row carrying the true
+    (union) trajectory must win even though every candidate is joint - this
+    is the PA1199-shaped case where "prefer non-joint" alone would pick a
+    fragment row with the wrong trajectory."""
+    table = pd.DataFrame(
+        [
+            {
+                "chrom": "NC_002516.2",
+                "start": 1300712,
+                "ref": "AG",
+                "alt": "A",
+                "presence_absence": "N / N / Y / N / N / N",
+                "joint_variant": True,
+                "amino_acid_consequence": "short",
+                "type_of_change": "joint_stop_gained&frameshift",
+            },
+            {
+                "chrom": "NC_002516.2",
+                "start": 1300712,
+                "ref": "AG",
+                "alt": "A",
+                "presence_absence": "N / N / N / Y / N / N",
+                "joint_variant": True,
+                "amino_acid_consequence": "short",
+                "type_of_change": "joint_missense&inframe_altering",
+            },
+            {
+                "chrom": "NC_002516.2",
+                "start": 1300712,
+                "ref": "AG",
+                "alt": "A",
+                "presence_absence": "N / N / Y / Y / Y / Y",
+                "joint_variant": True,
+                "amino_acid_consequence": "short",
+                "type_of_change": "joint_stop_gained&frameshift",
+            },
+        ]
+    )
+    keys = [
+        _build_variant_key(row, "fallback") for row in table.itertuples(index=False)
+    ]
+
+    canonical = select_canonical_row_positions(table, keys)
+
+    assert len(canonical) == 1
+    (position,) = canonical.values()
+    assert table.iloc[position]["presence_absence"] == "N / N / Y / Y / Y / Y"
+
+
+def test_select_canonical_row_positions_prefers_standalone_when_it_covers_the_union():
+    """The pre-existing viral case: a standalone (non-joint) row already
+    carries the full trajectory alongside a joint row masked to a subset of
+    samples - the standalone row must still win."""
+    table = pd.DataFrame(
+        [
+            {
+                "chrom": "segA",
+                "start": 100,
+                "ref": "A",
+                "alt": "T",
+                "presence_absence": "Y / Y / Y",
+                "joint_variant": False,
+                "amino_acid_consequence": "D614G",
+                "type_of_change": "missense",
+            },
+            {
+                "chrom": "segA",
+                "start": 100,
+                "ref": "A",
+                "alt": "T",
+                "presence_absence": "N / N / Y",
+                "joint_variant": True,
+                "amino_acid_consequence": "D614G+N501Y",
+                "type_of_change": "joint_missense",
+            },
+        ]
+    )
+    keys = [
+        _build_variant_key(row, "fallback") for row in table.itertuples(index=False)
+    ]
+
+    canonical = select_canonical_row_positions(table, keys)
+
+    assert len(canonical) == 1
+    (position,) = canonical.values()
+    assert table.iloc[position]["presence_absence"] == "Y / Y / Y"
+    assert bool(table.iloc[position]["joint_variant"]) is False

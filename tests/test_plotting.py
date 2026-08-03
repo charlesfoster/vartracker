@@ -365,15 +365,239 @@ def test_prepare_plot_inputs_uses_unique_internal_variant_keys():
     summary, long_df, _, _ = prepare_plot_inputs(table)
 
     assert summary["variant_id"].nunique() == 2
+    # Both variants would otherwise render to the same "INTERGENIC:None"
+    # display label. variant_id (the internal key) was always unique for
+    # this case; now the *displayed* label is also disambiguated (via
+    # find_colliding_base_labels/disambiguate_base_label) with a positional
+    # + ref>alt suffix, so the two variants are distinguishable on plots too.
     assert {label.split(" (", 1)[0] for label in summary["variant_label"]} == {
-        "INTERGENIC:None"
+        "INTERGENIC:None @100A>G",
+        "INTERGENIC:None @200C>T",
     }
     assert (
         long_df.loc[
-            long_df["variant_label"].str.startswith("INTERGENIC:None"), "variant_id"
+            long_df["variant_label"].str.startswith("INTERGENIC:None @"),
+            "variant_id",
         ].nunique()
         == 2
     )
+
+
+def test_prepare_plot_inputs_collapses_duplicate_rows_for_trajectory():
+    # Models the real PA1199 case from PAO1 validation
+    # (NC_002516.2:1300712 AG>A): one physical variant described by
+    # bcftools-csq under three distinct joint annotation groups, each row
+    # masked to a different single sample, collectively present in all 3
+    # samples even though no single row shows that on its own.
+    base = {
+        "chrom": "NC_002516.2",
+        "start": 1300712,
+        "end": 1300713,
+        "ref": "AG",
+        "alt": "A",
+        "gene": "PA1199",
+        "variant": "1300712_AGdelG",
+        "nsp_aa_change": "",
+        "type_of_variant": "indel",
+        "variant_status": "new",
+        "persistence_status": "new_persistent",
+        "samples": "P1 / P2 / P3",
+        "sample_number": "1 / 2 / 3",
+        "per_sample_variant_qc": "P / P / P",
+        "joint_variant": True,
+    }
+    table = pd.DataFrame(
+        [
+            {
+                **base,
+                "amino_acid_consequence": "PA1199:frameshift_group_A",
+                "type_of_change": "joint_frameshift",
+                "presence_absence": "Y / N / N",
+                "alt_freq": "0.50 / 0.03 / 0.02",
+            },
+            {
+                **base,
+                "amino_acid_consequence": "PA1199:frameshift_group_B",
+                "type_of_change": "joint_frameshift",
+                "presence_absence": "N / Y / N",
+                "alt_freq": "0.03 / 0.60 / 0.04",
+            },
+            {
+                **base,
+                "amino_acid_consequence": "PA1199:frameshift_group_C",
+                "type_of_change": "joint_frameshift",
+                "presence_absence": "N / N / Y",
+                "alt_freq": "0.02 / 0.05 / 0.70",
+            },
+        ]
+    )
+
+    summary, long_df, _, _ = prepare_plot_inputs(table)
+
+    assert long_df["variant_id"].nunique() == 1
+    variant_id = long_df["variant_id"].iloc[0]
+    variant_rows = long_df[long_df["variant_id"] == variant_id].sort_values(
+        "sample_number"
+    )
+
+    assert len(variant_rows) == 3
+    assert list(variant_rows["sample_number"]) == [1, 2, 3]
+    assert variant_rows["present"].all()
+    # Each sample's AF must be the max across the variant's 3 source rows for
+    # that sample, not zero and not an arbitrary single row's value.
+    assert list(variant_rows["allele_frequency"].round(2)) == [0.50, 0.60, 0.70]
+
+
+def test_prepare_plot_inputs_collapses_duplicate_rows_for_turnover_counts():
+    # Same fragmented-row scenario as above, but shaped for a clear
+    # new/lost/new transition sequence across 4 samples so turnover counting
+    # can be checked against a known-correct answer.
+    base = {
+        "chrom": "NC_002516.2",
+        "start": 1300712,
+        "end": 1300713,
+        "ref": "AG",
+        "alt": "A",
+        "gene": "PA1199",
+        "variant": "1300712_AGdelG",
+        "amino_acid_consequence": "PA1199:frameshift",
+        "nsp_aa_change": "",
+        "type_of_variant": "indel",
+        "type_of_change": "joint_frameshift",
+        "variant_status": "new",
+        "persistence_status": "new_transient",
+        "samples": "P1 / P2 / P3 / P4",
+        "sample_number": "1 / 2 / 3 / 4",
+        "per_sample_variant_qc": "P / P / P / P",
+        "joint_variant": True,
+    }
+    table = pd.DataFrame(
+        [
+            {
+                **base,
+                "presence_absence": "Y / N / N / N",
+                "alt_freq": "0.40 / 0.0 / 0.0 / 0.0",
+            },
+            {
+                **base,
+                "presence_absence": "N / N / Y / Y",
+                "alt_freq": "0.0 / 0.0 / 0.30 / 0.50",
+            },
+        ]
+    )
+
+    summary, long_df, _, _ = prepare_plot_inputs(table)
+
+    # No duplicate (variant_id, sample_number) pairs: exactly one row per
+    # sample for this variant, as plot_variant_turnover assumes.
+    assert not long_df.duplicated(subset=["variant_id", "sample_number"]).any()
+
+    variant_id = long_df["variant_id"].iloc[0]
+    trajectory = long_df[long_df["variant_id"] == variant_id].sort_values(
+        "sample_number"
+    )
+    presence_sequence = list(trajectory["present"])
+    # Union of the two rows' presence vectors: present, absent, present, present.
+    assert presence_sequence == [True, False, True, True]
+
+    # Naive new/lost transition scan mirroring what plot_variant_turnover
+    # does over a collapsed long_df (one row per variant per sample).
+    transitions = 0
+    previous_present = False
+    for present in presence_sequence:
+        if present != previous_present:
+            transitions += 1
+        previous_present = present
+    # new at sample 1, lost at sample 2, new (re-emergence) at sample 3.
+    assert transitions == 3
+
+
+def test_prepare_plot_inputs_summary_uses_canonical_row_metadata():
+    variant_a_base = {
+        "chrom": "NC_002516.2",
+        "start": 2000000,
+        "end": 2000000,
+        "ref": "C",
+        "alt": "T",
+        "gene": "PA2000",
+        "variant": "2000000C>T",
+        "nsp_aa_change": "",
+        "type_of_variant": "snp",
+        "variant_status": "new",
+        "persistence_status": "new_persistent",
+        "samples": "P1 / P2 / P3",
+        "sample_number": "1 / 2 / 3",
+        "per_sample_variant_qc": "P / P / P",
+    }
+    variant_b_base = {
+        "chrom": "NC_002516.2",
+        "start": 3000000,
+        "end": 3000000,
+        "ref": "G",
+        "alt": "A",
+        "gene": "PA3000",
+        "variant": "3000000G>A",
+        "nsp_aa_change": "",
+        "type_of_variant": "snp",
+        "variant_status": "new",
+        "persistence_status": "new_persistent",
+        "samples": "P1 / P2 / P3",
+        "sample_number": "1 / 2 / 3",
+        "per_sample_variant_qc": "P / P / P",
+    }
+
+    table = pd.DataFrame(
+        [
+            # Variant A: one joint fragment row (masked, NOT the union) and
+            # one standalone row that IS the union -> standalone wins
+            # because it's both the union match AND non-joint.
+            {
+                **variant_a_base,
+                "amino_acid_consequence": "PA2000:joint_frag",
+                "type_of_change": "joint_missense",
+                "presence_absence": "N / N / Y",
+                "alt_freq": "0.0 / 0.0 / 0.30",
+                "joint_variant": True,
+            },
+            {
+                **variant_a_base,
+                "amino_acid_consequence": "PA2000:D10E",
+                "type_of_change": "missense",
+                "presence_absence": "Y / Y / Y",
+                "alt_freq": "0.20 / 0.25 / 0.30",
+                "joint_variant": False,
+            },
+            # Variant B: both rows are joint; one is a masked fragment, the
+            # other is the union -> the union row wins even though it is
+            # also joint (no non-joint candidate exists to prefer instead).
+            {
+                **variant_b_base,
+                "amino_acid_consequence": "PA3000:joint_frag_x",
+                "type_of_change": "joint_missense_x",
+                "presence_absence": "N / N / Y",
+                "alt_freq": "0.0 / 0.0 / 0.40",
+                "joint_variant": True,
+            },
+            {
+                **variant_b_base,
+                "amino_acid_consequence": "PA3000:joint_frag_y",
+                "type_of_change": "joint_missense_y",
+                "presence_absence": "Y / Y / Y",
+                "alt_freq": "0.10 / 0.20 / 0.40",
+                "joint_variant": True,
+            },
+        ]
+    )
+
+    summary, long_df, _, _ = prepare_plot_inputs(table)
+
+    row_a = summary[summary["gene"] == "PA2000"]
+    assert len(row_a) == 1
+    assert row_a["type_of_change"].iloc[0] == "missense"
+
+    row_b = summary[summary["gene"] == "PA3000"]
+    assert len(row_b) == 1
+    assert row_b["type_of_change"].iloc[0] == "joint_missense_y"
 
 
 def test_genome_plot_defaults_to_snps_only(capsys):

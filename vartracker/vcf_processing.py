@@ -11,6 +11,7 @@ import gzip
 import shutil
 from pathlib import Path
 from typing import TypedDict
+from urllib.parse import unquote
 
 import pandas as pd
 import numpy as np
@@ -563,8 +564,18 @@ def annotate_vcf(
     annotation,
     debug,
     multiallelic_overflow="error",
+    local_csq=False,
 ):
-    """Annotate a merged multi-sample VCF with bcftools csq."""
+    """Annotate a merged multi-sample VCF with bcftools csq.
+
+    local_csq: pass bcftools csq -l/--local-csq, so each variant is
+    considered on its own rather than jointly with nearby co-occurring
+    variants. Off by default - joint calling is correct for genuinely
+    linked variants, but can fragment a single variant's presence across
+    samples when co-occurrence is just an artefact of unphased, sub-consensus
+    calls (see analysis.py::process_joint_variants and the row-splitting
+    this can otherwise cause in process_vcf below).
+    """
     if multiallelic_overflow not in {"error", "drop-lowest-af", "skip-site"}:
         raise RuntimeError(
             "multiallelic_overflow must be one of: error, drop-lowest-af, skip-site"
@@ -690,8 +701,9 @@ def annotate_vcf(
         shutil.copyfile(skipped_vcf, output_file)
         return
 
+    local_flag = " -l" if local_csq else ""
     cmd = (
-        f"bcftools csq -p R -f {reference} -g {annotation} --force "
+        f"bcftools csq -p R{local_flag} -f {reference} -g {annotation} --force "
         f"-Ov -o {annotated_only_vcf} {prepared_vcf}"
     )
 
@@ -709,12 +721,32 @@ def annotate_vcf(
         shutil.copyfile(annotated_only_vcf, output_file)
 
 
-def calculate_variant_site_depths(cov_df, v, samples, min_depth: int):
+def _mean_depth_in_range(arr, lo: int, hi: int):
+    """Mean depth over the 1-based inclusive position range [lo, hi].
+
+    Positions outside the array (beyond the coverage file's span) or marked
+    missing (-1, the fill value for positions absent from the coverage file)
+    are excluded rather than treated as zero coverage. Returns None if no
+    position in range has recorded depth.
+    """
+    lo = max(lo, 1)
+    hi = min(hi, arr.shape[0] - 1)
+    if hi < lo:
+        return None
+    window = arr[lo : hi + 1]
+    valid = window[window >= 0]
+    if valid.size == 0:
+        return None
+    return valid.mean()
+
+
+def calculate_variant_site_depths(depth_arrays, v, samples, min_depth: int):
     """
     Calculate depth metrics for variant sites.
 
     Args:
-        cov_df (pd.DataFrame): Coverage data
+        depth_arrays (dict[str, np.ndarray]): Per-sample coverage depth,
+            indexed directly by 1-based genome position (index 0 unused).
         v: Variant object from cyvcf2
         samples (list): List of sample names
 
@@ -729,33 +761,23 @@ def calculate_variant_site_depths(cov_df, v, samples, min_depth: int):
         end = v.end
 
     if v.var_type == "snp":
-        site_depths = list(cov_df.loc[cov_df["pos"] == start]["depth"])
+        site_depths = []
+        for sample in samples:
+            arr = depth_arrays[sample]
+            if 0 <= start < arr.shape[0] and arr[start] >= 0:
+                site_depths.append(int(arr[start]))
     else:
-        site_depths = (
-            cov_df[cov_df["pos"].between(start, end, inclusive="both")]
-            .groupby("sample")["depth"]
-            .mean()
-            .reset_index()
-        )
-        site_depths["order"] = pd.Categorical(
-            site_depths["sample"], categories=samples, ordered=True
-        )
-        site_depths = [
-            int(round(x, 0)) for x in list(site_depths.sort_values("order")["depth"])
-        ]
+        site_depths = []
+        for sample in samples:
+            mean_depth = _mean_depth_in_range(depth_arrays[sample], start, end)
+            if mean_depth is not None:
+                site_depths.append(int(round(mean_depth, 0)))
 
-    window_depth = (
-        cov_df[cov_df["pos"].between(start - 10, end + 10, inclusive="neither")]
-        .groupby("sample")["depth"]
-        .mean()
-        .reset_index()
-    )
-    window_depth["order"] = pd.Categorical(
-        window_depth["sample"], categories=samples, ordered=True
-    )
-    window_depth = [
-        int(round(x, 0)) for x in list(window_depth.sort_values("order")["depth"])
-    ]
+    window_depth = []
+    for sample in samples:
+        mean_depth = _mean_depth_in_range(depth_arrays[sample], start - 9, end + 9)
+        if mean_depth is not None:
+            window_depth.append(int(round(mean_depth, 0)))
 
     try:
         dp_values = v.format("DP").tolist()
@@ -829,9 +851,7 @@ def _summarise_sample_trajectory(allele_freqs, samples):
     if allele_freqs[0] != "." and allele_freqs[-1] == ".":
         persistent_status = "original_lost"
     elif allele_freqs[0] != "." and allele_freqs[-1] != ".":
-        persistent_status = (
-            "original_intermittent" if has_gap else "original_retained"
-        )
+        persistent_status = "original_intermittent" if has_gap else "original_retained"
     elif allele_freqs[0] == "." and allele_freqs[-1] != ".":
         persistent_status = "new_intermittent" if has_gap else "new_persistent"
     elif allele_freqs[0] == "." and allele_freqs[-1] == ".":
@@ -1093,21 +1113,35 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
             "Number of coverage files does not match number of VCF samples."
         )
 
-    # Load coverage data
-    cov_list = []
+    # Load coverage data. Coverage files follow the `samtools depth -aa`
+    # convention (one line per genome position, contiguous from position 1),
+    # so per-sample depth is stored as a plain numpy array indexed directly
+    # by 1-based position rather than as rows in a concatenated DataFrame -
+    # for a bacterial-scale genome the DataFrame form holds tens of millions
+    # of rows (with per-row "ref"/"sample" strings) in memory simultaneously,
+    # while the array form needs only a few bytes per position per sample.
+    depth_arrays: dict[str, "np.ndarray"] = {}
     total_cov_list = []
 
-    for i, cov_file in enumerate(covs):
+    for sample, cov_file in zip(samples, covs):
         try:
-            cov = pd.read_csv(cov_file, sep="\t", names=["ref", "pos", "depth"])
+            cov = pd.read_csv(
+                cov_file,
+                sep="\t",
+                names=["ref", "pos", "depth"],
+                usecols=["pos", "depth"],
+                dtype={"pos": "int64", "depth": "int32"},
+            )
             total_cov = "{:.2f}".format(((sum(cov.depth > 10) / cov.shape[0]) * 100))
             total_cov_list.append(total_cov)
-            cov["sample"] = samples[i]
-            cov_list.append(cov)
+
+            positions = cov["pos"].to_numpy()
+            depths = cov["depth"].to_numpy()
+            arr = np.full(int(positions.max()) + 1, -1, dtype=np.int32)
+            arr[positions] = depths
+            depth_arrays[sample] = arr
         except Exception as e:
             raise RuntimeError(f"Error reading coverage file {cov_file}: {str(e)}")
-
-    cov_df = pd.concat(cov_list).set_index("sample")
 
     # Process variants
     for v in vcf:
@@ -1118,7 +1152,7 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
             allele_freqs = ["."] * max(1, len(samples))
         trajectory = _summarise_sample_trajectory(allele_freqs, samples)
 
-        depths_qc = calculate_variant_site_depths(cov_df, v, samples, min_depth)
+        depths_qc = calculate_variant_site_depths(depth_arrays, v, samples, min_depth)
         all_samples_pass_qc = "F" not in depths_qc["variant_qc"]
         proportion_samples_passing_qc = (
             sum(flag == "P" for flag in depths_qc["variant_qc"])
@@ -1135,6 +1169,8 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
             produced_annotation_specific_row = False
 
             if sample_bcsq_map:
+                trajectories_by_alt: dict = {}
+                groups_by_alt: dict = {}
                 for annotation_group in annotation_groups:
                     annot = _representative_bcsq_annotation(annotation_group)
                     anno = annot.split("|")
@@ -1158,9 +1194,29 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
                     masked_trajectory = _summarise_sample_trajectory(
                         masked_allele_freqs, samples
                     )
+
+                    if annotation_alt is not None:
+                        groups_by_alt.setdefault(annotation_alt, []).append(
+                            annotation_group
+                        )
+                        trajectories_by_alt.setdefault(annotation_alt, []).append(
+                            tuple(masked_trajectory["presence_absence"])
+                        )
+
                     if "Y" not in masked_trajectory["presence_absence"]:
                         continue
 
+                    # Every joint/compound annotation-group row is kept, not
+                    # just standalone ones: a compound consequence that only
+                    # ever shows up in one sample can still be real biology
+                    # (e.g. a newly emerging linked pair), and recurrence
+                    # across samples can only ever confirm something after
+                    # the fact - it cannot distinguish a genuine first
+                    # occurrence from an artefact, so filtering on it would
+                    # silently discard exactly the most novel findings along
+                    # with the noise. `joint_variant` (set downstream by
+                    # analysis.py::process_joint_variants) flags which rows
+                    # these are, so nothing here is deleted, only labelled.
                     result = _process_annotation(
                         v,
                         anno,
@@ -1176,6 +1232,61 @@ def process_vcf(vcf_file, covs, min_depth, sample_names_override=None):
                         samples,
                         total_cov_list,
                         annotation_alt,
+                    )
+                    results.append(result)
+                    produced_annotation_specific_row = True
+
+                # A gene with many closely-spaced variants can lead bcftools
+                # to describe every sample's occurrence of this same allele
+                # as a *different* joint/compound consequence (whichever
+                # neighbouring variants happened to co-occur in that
+                # particular sample), with no sample ever getting a
+                # standalone description. Each annotation-group row above is
+                # then masked to only the sample(s) matching its own exact
+                # compound description - e.g. six samples can each land in a
+                # *different* one-sample-wide row, so the union of all rows
+                # covers every sample yet no single row ever shows the
+                # variant's true, continuous trajectory (and persistence
+                # classification, computed per-row, is wrong for every one
+                # of them). Whenever no already-emitted row's trajectory for
+                # this allele exactly matches the true, unmasked per-sample
+                # presence, synthesise one extra row carrying that true
+                # trajectory (the same genotype/AF-derived data used for the
+                # single-record-allele case above) alongside the existing
+                # joint-detail rows, so the variant's real presence and
+                # persistence_status is available from at least one row.
+                for alt, true_allele_freqs in alt_frequency_map.items():
+                    true_trajectory = _summarise_sample_trajectory(
+                        true_allele_freqs, samples
+                    )
+                    true_tuple = tuple(true_trajectory["presence_absence"])
+                    if "Y" not in true_tuple:
+                        continue
+                    if true_tuple in trajectories_by_alt.get(alt, []):
+                        continue
+
+                    candidate_groups = groups_by_alt.get(alt) or annotation_groups
+                    representative_group = min(
+                        candidate_groups,
+                        key=lambda g: len(_representative_bcsq_annotation(g)),
+                    )
+                    annot = _representative_bcsq_annotation(representative_group)
+                    anno = annot.split("|")
+                    result = _process_annotation(
+                        v,
+                        anno,
+                        true_trajectory["variant_status"],
+                        true_trajectory["persistent_status"],
+                        true_trajectory["presence_absence"],
+                        true_trajectory["first_appearance"],
+                        true_trajectory["last_appearance"],
+                        all_samples_pass_qc,
+                        proportion_samples_passing_qc,
+                        depths_qc,
+                        true_allele_freqs,
+                        samples,
+                        total_cov_list,
+                        alt,
                     )
                     results.append(result)
                     produced_annotation_specific_row = True
@@ -1314,10 +1425,11 @@ def _process_annotation(
         }
     else:
         # Regular annotation
+        gene = unquote(anno[1])
         reformatted_aa = (
-            reformat_csq_notation(anno[1], anno[5])
+            reformat_csq_notation(gene, anno[5])
             if len(anno) > 5
-            else [anno[1] + ":" + anno[0], ""]
+            else [gene + ":" + anno[0], ""]
         )
 
         aa_exploration = AminoAcidChange(reformatted_aa[0].replace("*", ""))
@@ -1326,7 +1438,7 @@ def _process_annotation(
             "chrom": v.CHROM,
             "start": v.start + 1,
             "end": v.end,
-            "gene": anno[1],
+            "gene": gene,
             "ref": v.REF,
             "alt": selected_alt,
             "variant": v.REF + str(v.POS) + selected_alt,

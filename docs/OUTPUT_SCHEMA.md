@@ -28,9 +28,9 @@ Columns that encode per-sample values are slash-separated and ordered by the inp
 | presence_absence | string (slash-separated) | Per-sample presence (Y) or absence (N), ordered by input. |  | Y/N |
 | first_appearance | string | Sample name where the variant first appears. |  |  |
 | last_appearance | string | Sample name where the variant last appears. |  |  |
-| all_samples_pass_qc | boolean | True if every sample passes per-sample variant QC. |  | true, false |
+| all_samples_pass_qc | boolean | True only if every sample is 'P' in per_sample_variant_qc. False means at least one sample's presence/absence call could not be confidently distinguished from dropout/non-detection - inspect per_sample_variant_qc to see which sample(s) are affected before treating this variant's presence/absence pattern as reliable. |  | true, false |
 | proportion_samples_passing_qc | number | Proportion of samples passing per-sample variant QC. | fraction | 0-1 |
-| per_sample_variant_qc | string (slash-separated) | Per-sample QC flags (P/F) ordered by input. A sample fails ('F') when there is no variant-supporting read and site coverage is below --min-depth, i.e. when genuine absence of the variant cannot be distinguished from dropout/non-detection; 'P' means absence (or presence) was confidently called at that sample. |  | P, F |
+| per_sample_variant_qc | string (slash-separated) | Per-sample QC flags (P/F) ordered by input. A sample fails ('F') when there is no variant-supporting read and site coverage is below --min-depth, i.e. when genuine absence of the variant cannot be distinguished from dropout/non-detection; 'P' means absence (or presence) was confidently called at that sample. E.g. 'P / P / F / P / P / P' identifies the third sample as the one where QC failed. The default heatmap marks 'F' cells visually: an unfilled black-bordered rectangle in the static PDF, and a dark inset ring plus a 'QC=FAIL' hover tooltip in the interactive HTML version. |  | P, F |
 | aa1_total_properties | string | Physicochemical properties for the reference amino acid. |  | semicolon-separated properties |
 | aa2_total_properties | string | Physicochemical properties for the alternate amino acid. |  | semicolon-separated properties |
 | aa1_unique_properties | string | Properties unique to the reference amino acid. |  | semicolon-separated properties |

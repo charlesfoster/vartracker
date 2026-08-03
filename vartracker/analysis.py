@@ -101,6 +101,130 @@ def _presence_vector(value: object) -> tuple[str, ...]:
     return tuple(_parse_slash_separated_tokens(value))
 
 
+def _build_variant_key(row: object, fallback_label: str) -> str:
+    chrom = str(getattr(row, "chrom", "")).strip()
+    start = str(getattr(row, "start", "")).strip()
+    ref = str(getattr(row, "ref", "")).strip()
+    alt = str(getattr(row, "alt", "")).strip()
+    variant_name = str(getattr(row, "variant", "")).strip()
+
+    if chrom and start and ref and alt:
+        return f"{chrom}:{start}:{ref}>{alt}"
+    if chrom and start and variant_name:
+        return f"{chrom}:{start}:{variant_name}"
+    if variant_name:
+        return variant_name
+    return fallback_label
+
+
+def _row_is_joint(row: object) -> bool:
+    """Best-effort joint/compound flag for a results-table row.
+
+    Prefers the explicit `joint_variant` column (set by
+    `process_joint_variants`); falls back to the `type_of_change` prefix for
+    tables that predate that column (e.g. synthetic test fixtures).
+    """
+    joint_variant = getattr(row, "joint_variant", None)
+    if joint_variant is not None and not (
+        isinstance(joint_variant, float) and pd.isna(joint_variant)
+    ):
+        return bool(joint_variant)
+    change_type = str(getattr(row, "type_of_change", "")).strip().lstrip("*")
+    return re.sub(r"^(joint_)+", "", change_type) != change_type
+
+
+def select_canonical_row_positions(
+    table: pd.DataFrame, variant_keys: Sequence[str]
+) -> dict[str, int]:
+    """Map each variant key to the positional index of its canonical row.
+
+    `variant_keys[i]` is the caller's key for the i-th row of `table` (as
+    produced by `_build_variant_key`), so callers that already build keys in
+    their own pass cannot drift from this one.
+
+    A single physical variant can have more than one row when bcftools csq
+    describes it under several distinct joint/compound annotation groups
+    (see the row-canonicalisation logic in `vcf_processing.py::process_vcf`).
+    The canonical row is chosen, in order:
+
+    1. Among rows whose `presence_absence` equals the element-wise union of
+       all of the variant's rows' presence vectors (i.e. the row - or rows -
+       that alone already carry the variant's true, full trajectory). If no
+       row matches the union exactly (not expected, but cheap to guard),
+       fall back to the row(s) with the most "Y" tokens.
+    2. Among those, prefer a non-joint row (see `_row_is_joint`) - this
+       reproduces today's behaviour exactly for the standalone-vs-joint-detail
+       case that already existed before row-canonicalisation.
+    3. Tie-break deterministically: shortest `amino_acid_consequence` (least
+       compound description), then lowest positional index.
+
+    Returns a dict of variant_key -> positional index into `table` (i.e. an
+    index usable with `table.iloc[...]`, not `table.loc[...]`).
+    """
+    positions_by_key: dict[str, list[int]] = {}
+    for position, key in enumerate(variant_keys):
+        positions_by_key.setdefault(key, []).append(position)
+
+    canonical: dict[str, int] = {}
+    for key, positions in positions_by_key.items():
+        if len(positions) == 1:
+            canonical[key] = positions[0]
+            continue
+
+        presence_vectors = {
+            position: _presence_vector(
+                getattr(table.iloc[position], "presence_absence", "")
+            )
+            for position in positions
+        }
+        length = max((len(vec) for vec in presence_vectors.values()), default=0)
+        union = tuple(
+            (
+                "Y"
+                if any(
+                    vec[idx] == "Y"
+                    for vec in presence_vectors.values()
+                    if idx < len(vec)
+                )
+                else "N"
+            )
+            for idx in range(length)
+        )
+
+        candidates = [
+            position for position in positions if presence_vectors[position] == union
+        ]
+        if not candidates:
+            max_present = max(
+                sum(token == "Y" for token in vec) for vec in presence_vectors.values()
+            )
+            candidates = [
+                position
+                for position in positions
+                if sum(token == "Y" for token in presence_vectors[position])
+                == max_present
+            ]
+
+        rows_by_position = {position: table.iloc[position] for position in candidates}
+        non_joint_candidates = [
+            position
+            for position in candidates
+            if not _row_is_joint(rows_by_position[position])
+        ]
+        if non_joint_candidates:
+            candidates = non_joint_candidates
+
+        def _tie_break_key(position: int) -> tuple[int, int]:
+            aa_consequence = str(
+                getattr(rows_by_position[position], "amino_acid_consequence", "")
+            )
+            return (len(aa_consequence), position)
+
+        canonical[key] = min(candidates, key=_tie_break_key)
+
+    return canonical
+
+
 def _find_joint_main_index(tab: pd.DataFrame, joint_index: int, main_pos: int) -> int:
     candidates = tab[
         (tab["start"] == main_pos)
@@ -164,10 +288,6 @@ def process_joint_variants(path):
     # Get indices where bcsq_aa_notation starts with "@"
     idx = tab[tab["bcsq_aa_notation"].str.startswith("@", na=False)].index
 
-    # If no joint variants, return the table as is
-    if idx.empty:
-        return tab
-
     for i in idx:
         try:
             # Find the main pos and main index number
@@ -206,6 +326,21 @@ def process_joint_variants(path):
         except (ValueError, IndexError, KeyError) as e:
             print(f"Warning: Could not process joint variant at index {i}: {str(e)}")
             continue
+
+    # Second, additive pass: some rows carry a genuinely compound
+    # `bcsq_nt_notation` (e.g. "190263TCC>T+190295T>G+190354G>A") - more than
+    # one "pos ref>alt" term joined by "+" - but were never flagged joint by
+    # the `@`-pointer matching above. This happens when a variant has several
+    # sibling rows at the same position (routine now that rows are
+    # canonicalised), so the one-to-one `@`-pointer match only touches one
+    # sibling even though every sibling's own notation is plainly compound.
+    # Flag any such row directly from its own notation, so `joint_variant`
+    # and the `joint_` `type_of_change` prefix never disagree with what the
+    # row itself encodes.
+    compound_nt_mask = tab["bcsq_nt_notation"].astype(str).str.count(">") > 1
+    for i in tab.index[compound_nt_mask]:
+        tab.at[i, "joint_variant"] = True
+        tab.at[i, "type_of_change"] = _ensure_joint_prefix(tab.at[i, "type_of_change"])
 
     tab.to_csv(path, index=None)
     return tab
@@ -538,9 +673,9 @@ def select_genes_for_plot(
         plot_table = gene_table[gene_table["gene"].isin(variant_genes)]
         return plot_table, None
 
-    new_counts = gene_table.loc[gene_table["type"] == "new_mutations"].set_index("gene")[
-        "number"
-    ]
+    new_counts = gene_table.loc[gene_table["type"] == "new_mutations"].set_index(
+        "gene"
+    )["number"]
     ranked = sorted(
         variant_genes, key=lambda g: (-new_counts.get(g, 0), -totals.get(g, 0))
     )
@@ -804,6 +939,99 @@ def _resolve_variant_labels(row) -> Tuple[str, str, str]:
     return gene_label, display_label, base_label
 
 
+def find_colliding_base_labels(
+    base_labels: Sequence[str], variant_keys: Sequence[str]
+) -> set[str]:
+    """Base labels that map to more than one distinct variant key.
+
+    `base_labels` and `variant_keys` are parallel sequences, one entry per
+    results-table row (see `_build_variant_key` for how a variant key is
+    derived). The same physical variant can legitimately appear on more than
+    one row (e.g. once standalone and once as a joint/compound fragment) and
+    still share a `base_label` - that is not a collision. A collision is a
+    `base_label` shared by rows whose variant keys differ, i.e. genuinely
+    different variants that `_resolve_variant_labels` happens to render
+    identically. This includes, but is not limited to, truncation of long
+    compound amino-acid-consequence strings to the same head+N+tail form -
+    on real bacterial (joint-csq) data, bcftools csq can also give two
+    different nucleotide variants an identical, untruncated amino-acid
+    description.
+    """
+    keys_by_label: dict[str, set[str]] = {}
+    for label, key in zip(base_labels, variant_keys):
+        keys_by_label.setdefault(label, set()).add(key)
+    return {label for label, keys in keys_by_label.items() if len(keys) > 1}
+
+
+def disambiguate_base_label(base_label: str, row: object) -> str:
+    """Append a positional suffix to a base label already known to collide.
+
+    Only call this for labels already returned by `find_colliding_base_labels`
+    - i.e. labels genuinely shared by more than one distinct variant. The
+    row's `start` is usually enough to disambiguate two otherwise
+    identically-rendered variants (e.g. `"PA3025:CLLL+255RPA @3388987"`);
+    `ref`/`alt` are folded in too whenever available, so that two distinct
+    variants at the exact same position (a multiallelic site) still end up
+    with different labels rather than requiring a second "is this still
+    colliding?" pass.
+
+    Note: a disambiguated label no longer matches the literature-anchor
+    `_canonical_label` lookup. That's acceptable - collisions only arise for
+    long compound joint labels, which never matched the literature database
+    anyway (see `_canonical_label`).
+    """
+    start = str(getattr(row, "start", "")).strip()
+    candidate = f"{base_label} @{start}"
+    ref = str(getattr(row, "ref", "")).strip()
+    alt = str(getattr(row, "alt", "")).strip()
+    if ref or alt:
+        candidate = f"{candidate}{ref}>{alt}"
+    return candidate
+
+
+def compute_variant_labeling(
+    table: pd.DataFrame,
+) -> tuple[list[str], set[str], dict[str, int]]:
+    """Table-wide bookkeeping shared by every plot/heatmap caller: a variant
+    key per row, the set of base labels that collide across distinct
+    variants, and each variant's canonical row position.
+
+    Returns (variant_keys, colliding_base_labels, canonical_positions),
+    where variant_keys[i] is the key for table's i-th row (see
+    `_build_variant_key`).
+    """
+    base_labels: list[str] = []
+    variant_keys: list[str] = []
+    for row in table.itertuples(index=False):
+        _, _, row_base_label = _resolve_variant_labels(row)
+        base_labels.append(row_base_label)
+        variant_keys.append(_build_variant_key(row, row_base_label))
+
+    colliding_base_labels = find_colliding_base_labels(base_labels, variant_keys)
+    canonical_positions = select_canonical_row_positions(table, variant_keys)
+    return variant_keys, colliding_base_labels, canonical_positions
+
+
+def disambiguate_labels_if_colliding(
+    base_label: str,
+    display_label: str,
+    row: object,
+    colliding_base_labels: set[str],
+) -> tuple[str, str]:
+    """Apply `disambiguate_base_label` to (base_label, display_label) when
+    base_label is a known collision; otherwise return them unchanged.
+    """
+    if base_label not in colliding_base_labels:
+        return base_label, display_label
+    base_label = disambiguate_base_label(base_label, row)
+    nuc_change = str(getattr(row, "variant", "")).strip()
+    if nuc_change and nuc_change not in {"", "None"}:
+        display_label = f"{base_label}\n({nuc_change})"
+    else:
+        display_label = base_label
+    return base_label, display_label
+
+
 def _prepare_variant_heatmap_matrix(
     table: pd.DataFrame,
     sample_names: Sequence[str],
@@ -904,11 +1132,20 @@ def _prepare_variant_heatmap_matrix(
         )
     )
 
+    # Computed over the whole, unfiltered table (not just the rows that will
+    # survive filtering) so label-collision detection and canonical-row
+    # selection see the complete picture. Positional indices line up 1:1
+    # with the `enumerate(table.itertuples(...))` loop that follows, since
+    # both walk the same unfiltered `table` in the same order.
+    variant_keys, colliding_base_labels, canonical_positions = compute_variant_labeling(
+        table
+    )
+
     records: List[Dict[str, Union[str, float, int]]] = []
     record_index_by_label: dict[str, int] = {}
     qc_maps: dict[str, dict[str, str]] = {}
 
-    for row in table.itertuples(index=False):
+    for pos, row in enumerate(table.itertuples(index=False)):
         gene_value = getattr(row, "gene", "")
         if str(gene_value) in {"5' UTR", "3' UTR", "INTERGENIC"}:
             continue
@@ -923,11 +1160,18 @@ def _prepare_variant_heatmap_matrix(
             continue
 
         gene_label, display_label, base_label = _resolve_variant_labels(row)
+        base_label, display_label = disambiguate_labels_if_colliding(
+            base_label, display_label, row, colliding_base_labels
+        )
 
         change_type = (
             str(getattr(row, "type_of_change", "")).strip().lower().lstrip("*")
         )
-        if not include_joint and change_type.startswith("joint"):
+        if (
+            not include_joint
+            and change_type.startswith("joint")
+            and pos != canonical_positions.get(variant_keys[pos])
+        ):
             continue
         if included_patterns and not any(
             fnmatch.fnmatch(change_type, pattern) for pattern in included_patterns
@@ -1205,6 +1449,7 @@ def _write_interactive_heatmap_html(
     cli_command: Optional[str],
     sample_labels: Sequence[str] | None = None,
     plot_title: str | None = None,
+    filename_stem: str = "variant_allele_frequency_heatmap",
 ) -> None:
     if matrix.empty:
         return
@@ -1565,7 +1810,7 @@ def _write_interactive_heatmap_html(
 </html>
 """
 
-    output_path = os.path.join(outdir, "variant_allele_frequency_heatmap.html")
+    output_path = os.path.join(outdir, f"{filename_stem}.html")
     with open(output_path, "w", encoding="utf-8") as handle:
         handle.write(html_doc)
 
@@ -1600,6 +1845,7 @@ def generate_variant_heatmap(
     cli_command: Optional[str] = None,
     x_tick_labels: Sequence[str] | None = None,
     plot_title: str | None = None,
+    filename_stem: str = "variant_allele_frequency_heatmap",
 ):
     """Generate a heatmap of variant allele frequencies across passages."""
 
@@ -1631,7 +1877,7 @@ def generate_variant_heatmap(
             print("No variant data available for heatmap; skipping plot.")
             return
 
-        heatmap_path = os.path.join(outdir, "variant_allele_frequency_heatmap.pdf")
+        heatmap_path = os.path.join(outdir, f"{filename_stem}.pdf")
 
         fig_width, fig_height = _heatmap_figure_size(
             len(heatmap_data.index), len(heatmap_data.columns)
@@ -1708,6 +1954,7 @@ def generate_variant_heatmap(
                 cli_command,
                 sample_labels=tick_labels,
                 plot_title=heatmap_title,
+                filename_stem=filename_stem,
             )
         except Exception as html_exc:  # pragma: no cover - best-effort UX
             print(f"Warning: failed to generate interactive heatmap: {html_exc}")

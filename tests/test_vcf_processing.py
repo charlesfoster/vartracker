@@ -513,6 +513,34 @@ def test_process_vcf_merges_starred_and_unstarred_equivalent_bcsq(tmp_path):
     assert row["persistence_status"] == "original_retained"
 
 
+def test_process_vcf_decodes_percent_encoded_gene_name_in_bcsq(tmp_path):
+    vcf_path = tmp_path / "annotated.vcf"
+    vcf_path.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1,length=9>\n"
+        '##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'
+        '##INFO=<ID=BCSQ,Number=.,Type=String,Description="Consequence">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Raw Depth">\n'
+        '##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##FORMAT=<ID=BCSQ,Number=.,Type=Integer,Description="Bitmask of indexes to INFO/BCSQ">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\n"
+        "chr1\t4\t.\tA\tG\t.\tPASS\tDP=100;AF=0.1;"
+        "BCSQ=missense|ercS%27|tx|protein_coding|+|10K>10A|100A>G"
+        "\tGT:DP:AF:BCSQ\t1:100:0.1:1\n",
+        encoding="utf-8",
+    )
+
+    cov1 = tmp_path / "s1.depth.txt"
+    _write_depth_file(cov1)
+
+    table = process_vcf(str(vcf_path), [str(cov1)], 10, ["s1"])
+
+    assert len(table) == 1
+    assert table.iloc[0]["gene"] == "ercS'"
+
+
 def test_process_vcf_keeps_single_site_variant_present_when_sample_has_joint_csq(
     tmp_path,
 ):
@@ -553,6 +581,74 @@ def test_process_vcf_keeps_single_site_variant_present_when_sample_has_joint_csq
     assert joint["type_of_change"] == "frameshift"
     assert joint["presence_absence"] == "N / Y"
     assert joint["alt_freq"] == ". / 0.200"
+
+
+def test_process_vcf_recovers_presence_when_no_sample_gets_a_standalone_bcsq(
+    tmp_path,
+):
+    """When a variant sits in a gene dense enough that every sample's own
+    joint-consequence call pairs it with a *different* co-occurring
+    neighbour, bcftools never reports it standalone for any sample, so each
+    annotation-group row is masked to a different, non-overlapping subset of
+    samples - fragmenting a variant that is genuinely present in all three
+    samples across two partial rows, with neither showing its true, full
+    trajectory. This is the bacterial-scale hotspot-gene scenario (see the
+    PAO1 validation): the variant's real presence must still surface in one
+    row so persistence_status isn't computed from a fragment. The two joint
+    rows themselves are kept unconditionally (see the module-level comment
+    in process_vcf on why row count is never reduced by deleting them) -
+    a single-sample joint call can be genuine, novel biology, not just an
+    artefact, and there is no reliable way to tell the two apart from
+    presence data alone."""
+    vcf_path = tmp_path / "annotated.vcf"
+    vcf_path.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##contig=<ID=chr1,length=9>\n"
+        '##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##INFO=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'
+        '##INFO=<ID=BCSQ,Number=.,Type=String,Description="Consequence">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Raw Depth">\n'
+        '##FORMAT=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">\n'
+        '##FORMAT=<ID=BCSQ,Number=.,Type=Integer,Description="Bitmask of indexes to INFO/BCSQ">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\ts2\ts3\n"
+        "chr1\t4\t.\tA\tG\t.\tPASS\tDP=100;AF=0.2;"
+        "BCSQ=missense|GENE1|tx|protein_coding|+|2K>2A|4A>G+5A>C,"
+        "frameshift|GENE1|tx|protein_coding|+|2KAAAAAAAAAAAA>2K|4A>G+6A>T"
+        "\tGT:DP:AF:BCSQ\t1:100:0.1:1\t1:100:0.2:4\t1:100:0.3:0\n",
+        encoding="utf-8",
+    )
+
+    cov1 = tmp_path / "s1.depth.txt"
+    cov2 = tmp_path / "s2.depth.txt"
+    cov3 = tmp_path / "s3.depth.txt"
+    _write_depth_file(cov1)
+    _write_depth_file(cov2)
+    _write_depth_file(cov3)
+
+    table = process_vcf(
+        str(vcf_path), [str(cov1), str(cov2), str(cov3)], 10, ["s1", "s2", "s3"]
+    )
+
+    # Both joint-detail rows survive, each masked to the one sample whose
+    # own bitmask matched that specific compound description.
+    joint_with_5 = table[table["bcsq_nt_notation"].eq("4A>G+5A>C")].iloc[0]
+    assert joint_with_5["presence_absence"] == "Y / N / N"
+
+    joint_with_6 = table[table["bcsq_nt_notation"].eq("4A>G+6A>T")].iloc[0]
+    assert joint_with_6["presence_absence"] == "N / Y / N"
+
+    # No group's bitmask matched s3, yet s3 genuinely carries the ALT allele
+    # (GT=1, AF=0.3) - the fix must add one extra row from the true,
+    # unmasked per-sample presence so this isn't silently dropped.
+    recovered = table[table["presence_absence"].eq("Y / Y / Y")]
+    assert len(recovered) == 1
+    recovered_row = recovered.iloc[0]
+    assert recovered_row["alt_freq"] == "0.100 / 0.200 / 0.300"
+    assert recovered_row["variant_status"] == "original"
+    assert recovered_row["persistence_status"] == "original_retained"
+
+    assert len(table) == 3
 
 
 @pytest.mark.skipif(shutil.which("bcftools") is None, reason="bcftools not available")

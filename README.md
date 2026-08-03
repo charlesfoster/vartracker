@@ -168,7 +168,7 @@ Docker is a self-contained reproducible option. If you publish the image, record
 set it when running to include it in the run manifest:
 
 ```bash
-export VARTRACKER_CONTAINER_IMAGE=ghcr.io/your-org/vartracker:2.2.1
+export VARTRACKER_CONTAINER_IMAGE=ghcr.io/your-org/vartracker:2.3.0
 export VARTRACKER_CONTAINER_DIGEST=sha256:...
 ```
 
@@ -310,8 +310,9 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 ### Mode-specific options
 
 - `vartracker vcf` – accepts core analysis options such as `--min-snv-freq`, `--min-indel-freq`,
-  `--allele-frequency-tag`, `--multiallelic-overflow`, `--name`, `--outdir`, `--sample-cap`, `--manifest-level`, and literature controls
-  (`--search-pokay`, `--literature-csv`). Use `--test` to run the bundled smoke test.
+  `--allele-frequency-tag`, `--multiallelic-overflow`, `--local-csq`, `--name`, `--outdir`,
+  `--sample-cap`, `--manifest-level`, and literature controls (`--search-pokay`,
+  `--literature-csv`). Use `--test` to run the bundled smoke test.
   `--max-plot-genes` and `--plot-genes` control the gene-wise summary figure only (see
   [Limitations](#limitations)); the tabular/TSV output always includes every annotated gene.
 - `vartracker bam` – everything from `vcf`, plus Snakemake options:
@@ -321,7 +322,7 @@ for both `.depth.txt` and `_depth.txt` patterns when preparing its internal test
 - `vartracker end-to-end` – similar to `bam`, with optional amplicon clipping controls:
   `--primer-bed` and `--ampliconclip-tolerance` (default: `1`). Supplying
   `--primer-bed` also enables LoFreq primer-overlap rescue by default.
-- `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV, including all heatmap customization filters.
+- `vartracker plot heatmap` (`hm`) – regenerate the heatmap from an existing vartracker results CSV, including all heatmap customisation filters.
 - `vartracker plot genome` – plot SNP positions along the genome or a selected gene region using all observed allele-frequency values for each variant.
 - `vartracker plot trajectory` – plot allele-frequency trajectories for a selected or auto-ranked subset of variants, optionally in takeover mode using threshold lines and threshold-based filtering.
 - `vartracker plot turnover` – plot new-versus-lost longitudinal turnover from the filtered result set.
@@ -346,7 +347,9 @@ Consequence-calling note:
 
 Heatmap filtering:
 - `vcf`, `bam`, and `end-to-end` always write the default heatmap. To customise heatmap content after a run, use `vartracker plot heatmap results.csv [options]`.
-- By default, all consequence classes are included except joint variants. Use `--include-joint` to show joint variants.
+- By default, each variant is shown once, using its canonical row (whether that row is joint or
+  not - see [Limitations](#limitations)). Use `--include-joint` to additionally reveal extra
+  joint/compound annotation-group rows for variants that have more than one.
 - `--aa-exclude`: comma-separated `type_of_change` patterns to exclude. Wildcards are supported.
 - `--aa-include`: comma-separated `type_of_change` patterns to include.
 - `--only-persistent`: only include new variants present at the final timepoint (`new_persistent` or
@@ -365,6 +368,10 @@ Heatmap filtering:
 - `--x-labels sample-number`: label heatmap x-axis columns by `sample_number` instead of sample name.
 - `--title`: set the heatmap plot title. The default is `Variant allele frequencies`.
 - `--literature-csv`: include literature links in the interactive HTML heatmap using a literature hits CSV.
+- `--out` (`vartracker plot heatmap` only): write the heatmap using this path as the base name,
+  e.g. `--out plots/myheatmap` writes `plots/myheatmap.pdf` and `plots/myheatmap.html`.
+- `--outdir` (`vartracker plot heatmap` only): output directory for heatmap files (default:
+  beside `results.csv`).
 - Example: `--aa-exclude "synonymous,*frameshift*,stop_gained"`
 
 Standalone plot filtering:
@@ -605,6 +612,39 @@ standalone plots) and `persistent_new_mutations.csv` include both `new_persisten
 `new_intermittent` variants, since both reached the final timepoint; the label only distinguishes
 the path taken to get there.
 
+### Interpreting the QC columns
+
+`results.csv` records presence/absence per sample (`presence_absence`, `Y`/`N`), but an `N` does
+not always mean the variant was confidently confirmed absent. At low sequencing depth, a variant
+can go undetected simply because there was insufficient coverage to call it either way - this is
+indistinguishable, from the VCF alone, from genuine absence. The QC columns exist to flag this:
+
+- `per_sample_variant_qc`: a per-sample `P`/`F` flag. `F` means that sample had no
+  variant-supporting read *and* site coverage below `--min-depth` (default: 10) - i.e. absence
+  could not be confidently distinguished from dropout/non-detection at that sample. `P` means the
+  call (presence or absence) was made with confidence.
+- `all_samples_pass_qc`: `true` only if every sample is `P`.
+- `proportion_samples_passing_qc`: the fraction of samples that are `P`.
+
+**Practical guidance:** if `all_samples_pass_qc` is `false` for a variant, inspect
+`per_sample_variant_qc` to see exactly which sample(s) it failed at - e.g. `P / P / F / P / P / P`
+identifies the third sample as the QC failure. Before treating an `N` in `presence_absence` as
+evidence a variant was truly lost or never present, check the corresponding position in
+`per_sample_variant_qc`: an `N` paired with `F` should be read as "not detected", not "confirmed
+absent" - this is especially relevant for low-frequency variants near the allele-frequency or depth
+thresholds (`--min-snv-freq`, `--min-indel-freq`, `--min-depth`), where dropout is more likely than
+at high-confidence, high-depth sites. This ambiguity also propagates into `persistence_status` (see
+[Persistence labels](#persistence-labels)): an apparent loss-then-reappearance (`*_intermittent`)
+may reflect genuine intermittent presence, or simply a low-coverage sample in between.
+
+**QC in the heatmap.** The default heatmap marks `F` cells visually rather than just via colour: the
+static PDF draws an unfilled black-bordered rectangle over any cell whose sample failed QC for that
+variant; the interactive HTML version uses a dark inset ring plus a hover tooltip reading
+`QC=FAIL`. To exclude variants that don't pass QC from a plot entirely (rather than just flagging
+the cells), use `--qc` and `--min-prop-passing-qc` (see
+[Mode-specific options](#mode-specific-options)), or inspect `per_sample_variant_qc` directly for
+the samples of interest.
+
 ### Output schema
 
 The results table schema is documented in `docs/OUTPUT_SCHEMA.md`. You can also print it from the CLI:
@@ -653,7 +693,7 @@ The practical constraint on larger genomes (e.g. bacterial pathogens, which can 
 annotated genes) is **visualisation**, not computation:
 
 - The gene-wise summary figure (`mutations_per_gene.pdf`) plots one bar per gene per panel. On a
-  genome with thousands of annotated genes this becomes unreadable regardless of how many variants
+  genome with thousands of annotated genes this becomes unreadable as a static image regardless of how many variants
   are actually present, because the plot iterates over every annotated gene, not just genes that
   carry a variant.
 - By default, the figure is capped to the top 30 genes, ranked by number of newly emerged variants
@@ -662,6 +702,52 @@ annotated genes) is **visualisation**, not computation:
   always contains every annotated gene, so no data is discarded by this option.
 - When the figure is truncated, this is stated directly on the figure itself (e.g. "top 30 of 412
   genes with variants"); if nothing was truncated, no such note is shown.
+
+### Bacterial genomes
+
+vartracker works well and efficiently at bacterial genome scale. It has been validated in `vcf`
+mode (i.e. from pre-called VCFs and coverage files, not the `bam`/`end-to-end` read-mapping
+workflow) against simulated *Pseudomonas aeruginosa* PAO1 data (NC_002516.2, 6.26 Mb, 5,573 CDS
+features) across two scenarios - 80 and 1,000 simulated variants, each across 6 timepoints. The
+smaller, 80-variant scenario completed in approximately 11 seconds of wall-clock time with
+approximately 0.9 GiB peak memory; the larger, 1,000-variant scenario completed in approximately
+22 seconds with approximately 2.8 GiB peak memory. At this scale, the practical caveat is not
+runtime or memory but the **interpretability of joint/compound amino-acid consequences in
+gene-dense hotspots**, discussed below.
+
+**Joint vs local `bcftools csq` calling.** By default, vartracker calls consequences jointly (the
+`bcftools csq` default), so that variants close enough together to plausibly affect the same
+codon(s) are described together as a single, compound amino-acid change. This is the correct
+behaviour for genuinely linked variants, but on gene-dense, high-variant-density data - common in
+bacterial within-host or experimental-evolution datasets, and rare in vartracker's original viral
+use case - many unphased, sub-consensus variants can cluster in the same gene without genotype
+evidence that they actually co-occur on the same haplotype. Joint calling then produces long,
+compound descriptions that are technically correct but hard to read, and can fragment a single
+variant's presence/absence trajectory across samples. The `--local-csq` option (see
+`vartracker --help`) switches to independent, SnpEff-like per-variant consequence calling, at the
+cost of no longer detecting genuinely combined effects between physically linked variants. Whichever
+mode is used, rows describing a joint/compound consequence are flagged in the `joint_variant`
+column of `results.csv`, which can be used to identify or filter these rows after the fact. This
+column is now fully reliable: on the PAO1 validation dataset, 100% of genuinely compound
+`bcftools csq` rows are correctly flagged.
+
+**Heatmap `--include-joint` semantics.** By default, the heatmap shows one row per variant - its
+canonical row, whether that row happens to be joint or not. `--include-joint` additionally reveals
+extra joint/compound annotation-group rows for variants that have more than one. This is a different
+kind of control from the gene-wise figure's `--max-plot-genes` cap: there is no row cap on the
+heatmap.
+
+**Heatmap legibility at bacterial scale.** Unlike the gene-wise figure, the heatmap has no built-in
+row cap, and is effectively illegible as a static image. However, you can still open it and scroll to read the rows. Alternatively, for large numbers of variants, narrow the heatmap using the
+"Heatmap filtering" options described under [Mode-specific options](#mode-specific-options) - for
+example `--gene-include`, `--hide-singletons`, `--min-max-af`, and `--only-persistent` - or generate
+multiple heatmaps over subsets of genes/samples rather than relying on a single, unfiltered plot.
+
+**Coverage-file disk and memory footprint.** Disk and memory usage for coverage/depth files scale
+with genome length multiplied by timepoint count. For reference, the PAO1 validation used 6 depth
+files at approximately 141 MB each (846 MB total) for one 6.3 Mb genome across 6 timepoints. Users
+planning many-timepoint experimental-evolution designs (often dozens of timepoints) on genomes
+larger than PAO1 should budget disk and memory accordingly.
 
 Separately, the bundled `pokay` functional-annotation database
 (see [Using Literature Database](#using-literature-database)) is specific to SARS-CoV-2 mutations
@@ -674,7 +760,7 @@ same schema can be supplied via `--literature-csv` for other organisms; see
 When using vartracker, please cite the software release you used. Citation metadata is provided
 in `CITATION.cff`, and GitHub releases are archived on Zenodo.
 
-- Foster, C. (2026). *vartracker* (Version 2.2.1). Zenodo. https://doi.org/10.5281/zenodo.18452274
+- Foster, C. (2026). *vartracker* (Version 2.3.0). Zenodo. https://doi.org/10.5281/zenodo.18452274
 
 Note: the DOI above is the Zenodo concept DOI for all versions; a version-specific DOI is minted by Zenodo after each GitHub release.
 
