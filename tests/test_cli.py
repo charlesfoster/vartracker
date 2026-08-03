@@ -34,7 +34,8 @@ def test_plot_heatmap_help_uses_standalone_option_names():
     assert "--x-labels" in heatmap_options
     assert "--heatmap-aa-exclude" not in out
     assert "--heatmap-include-joint" not in out
-    assert "--outdir" not in out
+    assert "--out" in out
+    assert "--outdir" in out
     assert "--name" not in out
     assert "--min-snv-freq" not in out
     assert "--min-indel-freq" not in out

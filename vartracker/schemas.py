@@ -113,9 +113,18 @@ RESULTS_SCHEMA: list[dict[str, str]] = [
     {
         "name": "persistence_status",
         "type": "string",
-        "description": "Persistence class based on first and last sample presence.",
+        "description": (
+            "Persistence class based on presence at the first and last "
+            "sample, and whether presence was continuous in between. The "
+            "'_intermittent' classes mean the variant was present at both "
+            "the first/last (original) or reappeared by the last sample "
+            "(new), but was absent from at least one sample in between."
+        ),
         "units": "",
-        "values": "original_retained, original_lost, new_persistent, new_transient",
+        "values": (
+            "original_retained, original_intermittent, original_lost, "
+            "new_persistent, new_intermittent, new_transient"
+        ),
     },
     {
         "name": "presence_absence",
@@ -141,7 +150,13 @@ RESULTS_SCHEMA: list[dict[str, str]] = [
     {
         "name": "all_samples_pass_qc",
         "type": "boolean",
-        "description": "True if every sample passes per-sample variant QC.",
+        "description": (
+            "True only if every sample is 'P' in per_sample_variant_qc. False "
+            "means at least one sample's presence/absence call could not be "
+            "confidently distinguished from dropout/non-detection - inspect "
+            "per_sample_variant_qc to see which sample(s) are affected before "
+            "treating this variant's presence/absence pattern as reliable."
+        ),
         "units": "",
         "values": "true, false",
     },
@@ -155,7 +170,18 @@ RESULTS_SCHEMA: list[dict[str, str]] = [
     {
         "name": "per_sample_variant_qc",
         "type": "string (slash-separated)",
-        "description": "Per-sample QC flags (P/F) ordered by input.",
+        "description": (
+            "Per-sample QC flags (P/F) ordered by input. A sample fails ('F') "
+            "when there is no variant-supporting read and site coverage is "
+            "below --min-depth, i.e. when genuine absence of the variant "
+            "cannot be distinguished from dropout/non-detection; 'P' means "
+            "absence (or presence) was confidently called at that sample. "
+            "E.g. 'P / P / F / P / P / P' identifies the third sample as the "
+            "one where QC failed. The default heatmap marks 'F' cells "
+            "visually: an unfilled black-bordered rectangle in the static "
+            "PDF, and a dark inset ring plus a 'QC=FAIL' hover tooltip in the "
+            "interactive HTML version."
+        ),
         "units": "",
         "values": "P, F",
     },

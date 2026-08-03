@@ -20,8 +20,11 @@ from .analysis import (
     _coerce_frequency,
     _extract_numeric_position,
     _resolve_variant_labels,
+    compute_variant_labeling,
+    disambiguate_labels_if_colliding,
 )
 from .core import InputValidationError, ProcessingError
+from .vcf_processing import NEW_ENDS_PRESENT_STATUSES
 
 DEFAULT_TRAJECTORY_TOP_N = 12
 DEFAULT_LIFESPAN_TOP_N = 20
@@ -113,22 +116,6 @@ def _project_name_from_results(table: pd.DataFrame, explicit_name: str | None) -
     return names[0] if len(names) == 1 else ""
 
 
-def _build_variant_key(row: object, fallback_label: str) -> str:
-    chrom = str(getattr(row, "chrom", "")).strip()
-    start = str(getattr(row, "start", "")).strip()
-    ref = str(getattr(row, "ref", "")).strip()
-    alt = str(getattr(row, "alt", "")).strip()
-    variant_name = str(getattr(row, "variant", "")).strip()
-
-    if chrom and start and ref and alt:
-        return f"{chrom}:{start}:{ref}>{alt}"
-    if chrom and start and variant_name:
-        return f"{chrom}:{start}:{variant_name}"
-    if variant_name:
-        return variant_name
-    return fallback_label
-
-
 def _display_label_prefix(label: object) -> str:
     return str(label).split(" (", 1)[0].strip()
 
@@ -146,11 +133,21 @@ def prepare_plot_inputs(
     table: pd.DataFrame,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[str], list[int]]:
     sample_names, sample_numbers = _get_sample_axis(table)
+    dedup_table = table.drop_duplicates().reset_index(drop=True)
+
+    all_variant_keys, colliding_base_labels, canonical_positions = (
+        compute_variant_labeling(dedup_table)
+    )
+
     long_records: list[dict[str, object]] = []
 
-    for row in table.drop_duplicates().itertuples(index=False):
-        _, display_label, base_label = _resolve_variant_labels(row)
-        variant_key = _build_variant_key(row, base_label)
+    for position, row in enumerate(dedup_table.itertuples(index=False)):
+        variant_key = all_variant_keys[position]
+        canonical_row = dedup_table.iloc[canonical_positions[variant_key]]
+        _, display_label, base_label = _resolve_variant_labels(canonical_row)
+        base_label, display_label = disambiguate_labels_if_colliding(
+            base_label, display_label, canonical_row, colliding_base_labels
+        )
         names = _parse_slash_tokens(getattr(row, "samples", ""))
         numbers = _parse_slash_tokens(getattr(row, "sample_number", ""))
         freqs = [
@@ -184,13 +181,19 @@ def prepare_plot_inputs(
                 {
                     "variant_id": variant_key,
                     "variant_label": display_label.replace("\n", " "),
-                    "variant_name": str(getattr(row, "variant", "")).strip(),
-                    "gene": str(getattr(row, "gene", "")).strip(),
-                    "type_of_change": str(getattr(row, "type_of_change", "")).strip(),
-                    "type_of_variant": str(getattr(row, "type_of_variant", "")).strip(),
-                    "variant_status": str(getattr(row, "variant_status", "")).strip(),
+                    "variant_name": str(getattr(canonical_row, "variant", "")).strip(),
+                    "gene": str(getattr(canonical_row, "gene", "")).strip(),
+                    "type_of_change": str(
+                        getattr(canonical_row, "type_of_change", "")
+                    ).strip(),
+                    "type_of_variant": str(
+                        getattr(canonical_row, "type_of_variant", "")
+                    ).strip(),
+                    "variant_status": str(
+                        getattr(canonical_row, "variant_status", "")
+                    ).strip(),
                     "persistence_status": str(
-                        getattr(row, "persistence_status", "")
+                        getattr(canonical_row, "persistence_status", "")
                     ).strip(),
                     "sample_name": sample_name,
                     "sample_number": int(float(sample_number)),
@@ -217,6 +220,36 @@ def prepare_plot_inputs(
         raise ProcessingError("No plottable variant records found in results CSV")
 
     long_df = pd.DataFrame(long_records).drop_duplicates()
+    long_df = long_df.sort_values(
+        ["sample_number", "variant_id", "sample_name"]
+    ).reset_index(drop=True)
+
+    # Collapse duplicate (variant_id, sample_number) rows created when a
+    # variant has multiple bcftools-csq annotation-group rows (see
+    # _build_variant_key / process_vcf's row-canonicalisation): a row's
+    # presence/AF is masked to whichever samples that specific annotation
+    # group matched, so the same sample can appear as absent on one row and
+    # present on another for the same variant. Take the union of presence
+    # and the max AF across a variant's rows for each sample, so plots see
+    # one point per (variant, sample) instead of drawing/counting duplicates.
+    # Metadata columns are already uniform per variant_id at this point
+    # (sourced from each variant's canonical row above), so "first" here is
+    # well-defined rather than arbitrary.
+    long_df = long_df.groupby(["variant_id", "sample_number"], as_index=False).agg(
+        variant_label=("variant_label", "first"),
+        variant_name=("variant_name", "first"),
+        gene=("gene", "first"),
+        type_of_change=("type_of_change", "first"),
+        type_of_variant=("type_of_variant", "first"),
+        variant_status=("variant_status", "first"),
+        persistence_status=("persistence_status", "first"),
+        sample_name=("sample_name", "first"),
+        allele_frequency=("allele_frequency", "max"),
+        present=("present", "max"),
+        sample_qc=("sample_qc", "first"),
+        sample_pass_qc=("sample_pass_qc", "first"),
+        has_literature=("has_literature", "max"),
+    )
     long_df = long_df.sort_values(
         ["sample_number", "variant_id", "sample_name"]
     ).reset_index(drop=True)
@@ -249,7 +282,9 @@ def prepare_plot_inputs(
     summary["duration"] = summary["last_seen"].fillna(0).astype(float) - summary[
         "first_seen"
     ].fillna(0).astype(float)
-    summary["is_persistent_new"] = summary["persistence_status"].eq("new_persistent")
+    summary["is_persistent_new"] = summary["persistence_status"].isin(
+        NEW_ENDS_PRESENT_STATUSES
+    )
     summary["is_nonsynonymous"] = (
         ~summary["type_of_change"].str.lower().str.contains("synonymous", na=False)
     )
@@ -308,7 +343,7 @@ def apply_shared_plot_filters(
 
     if persistent_only:
         filtered_summary = filtered_summary[
-            filtered_summary["persistence_status"].eq("new_persistent")
+            filtered_summary["persistence_status"].isin(NEW_ENDS_PRESENT_STATUSES)
         ]
 
     if new_only:
@@ -1143,10 +1178,16 @@ def load_reference_feature_metadata(results_csv: str | Path) -> dict[str, object
 def _collapse_variants_for_genome_plot(
     table: pd.DataFrame,
 ) -> pd.DataFrame:
+    dedup_table = table.drop_duplicates().reset_index(drop=True)
+
+    all_variant_keys, colliding_base_labels, canonical_positions = (
+        compute_variant_labeling(dedup_table)
+    )
+
     records: list[dict[str, object]] = []
-    for row in table.drop_duplicates().itertuples(index=False):
+    for position, row in enumerate(dedup_table.itertuples(index=False)):
         gene_label, display_label, base_label = _resolve_variant_labels(row)
-        variant_key = _build_variant_key(row, base_label)
+        variant_key = all_variant_keys[position]
         af_values = [
             _coerce_frequency(token)
             for token in _parse_slash_tokens(getattr(row, "alt_freq", ""))
@@ -1193,6 +1234,39 @@ def _collapse_variants_for_genome_plot(
             )
             continue
         first = group.iloc[0].to_dict()
+        canonical_row = dedup_table.iloc[canonical_positions[variant_id]]
+        canonical_gene_label, canonical_display_label, canonical_base_label = (
+            _resolve_variant_labels(canonical_row)
+        )
+        canonical_base_label, canonical_display_label = (
+            disambiguate_labels_if_colliding(
+                canonical_base_label,
+                canonical_display_label,
+                canonical_row,
+                colliding_base_labels,
+            )
+        )
+        first["variant_label"] = canonical_display_label.replace("\n", " ")
+        first["variant_name"] = str(getattr(canonical_row, "variant", "")).strip()
+        first["plot_gene"] = str(canonical_gene_label).strip()
+        first["raw_gene"] = str(getattr(canonical_row, "gene", "")).strip()
+        first["type_of_change"] = str(
+            getattr(canonical_row, "type_of_change", "")
+        ).strip()
+        first["type_of_variant"] = str(
+            getattr(canonical_row, "type_of_variant", "")
+        ).strip()
+        first["variant_status"] = str(
+            getattr(canonical_row, "variant_status", "")
+        ).strip()
+        first["persistence_status"] = str(
+            getattr(canonical_row, "persistence_status", "")
+        ).strip()
+        first["aa_position"] = _extract_numeric_position(
+            canonical_base_label.split(":", 1)[1]
+            if ":" in canonical_base_label
+            else canonical_base_label
+        )
         merged_af_values: list[float] = []
         for value in group["af_values"].tolist():
             merged_af_values.extend([float(item) for item in cast(list[float], value)])
@@ -1242,7 +1316,7 @@ def _subset_collapsed_variants(
     if max_af is not None:
         subset = subset[subset["summary_af"] <= max_af]
     if persistent_only:
-        subset = subset[subset["persistence_status"].eq("new_persistent")]
+        subset = subset[subset["persistence_status"].isin(NEW_ENDS_PRESENT_STATUSES)]
     if new_only:
         subset = subset[subset["variant_status"].eq("new")]
     if subset.empty:

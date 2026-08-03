@@ -32,12 +32,19 @@ from .core import (
     ProcessingError,
     FILE_COLUMNS,
 )
-from .vcf_processing import annotate_vcf, format_vcf, merge_consequences, process_vcf
+from .vcf_processing import (
+    NEW_ENDS_PRESENT_STATUSES,
+    annotate_vcf,
+    format_vcf,
+    merge_consequences,
+    process_vcf,
+)
 from .analysis import (
     process_joint_variants,
     generate_cumulative_lineplot,
     generate_gene_table,
     plot_gene_table,
+    parse_plot_genes_arg,
     generate_variant_heatmap,
     search_literature,
 )
@@ -75,6 +82,7 @@ from .schemas import (
 )
 from .data import parse_pokay as parse_pokay_module
 from .annotation_processing import (
+    ambiguous_gene_names,
     gene_lengths_from_gff3,
     validate_reference_and_annotation,
 )
@@ -181,7 +189,11 @@ def _add_heatmap_option_arguments(
         action="store_true",
         default=False,
         dest="heatmap_include_joint",
-        help="Include joint variants in heatmaps (default: exclude them)",
+        help=(
+            "Also show non-canonical joint/compound annotation-group rows in "
+            "heatmaps (a variant's canonical row is always shown by default, "
+            "even if joint)"
+        ),
     )
     add_legacy("include-joint", "heatmap_include_joint", action="store_true")
     group.add_argument(
@@ -189,7 +201,10 @@ def _add_heatmap_option_arguments(
         action="store_true",
         default=False,
         dest="heatmap_only_persistent",
-        help="Only include variants with persistence_status == new_persistent",
+        help=(
+            "Only include new variants present at the final timepoint "
+            "(persistence_status new_persistent or new_intermittent)"
+        ),
     )
     add_legacy("only-persistent", "heatmap_only_persistent", action="store_true")
     group.add_argument(
@@ -385,7 +400,10 @@ def _add_shared_plot_filter_arguments(group: argparse._ArgumentGroup) -> None:
         "--persistent-only",
         action="store_true",
         default=False,
-        help="Only include variants with persistence_status == new_persistent",
+        help=(
+            "Only include new variants present at the final timepoint "
+            "(persistence_status new_persistent or new_intermittent)"
+        ),
     )
     group.add_argument(
         "--new-only",
@@ -674,6 +692,7 @@ def _configure_vcf_parser(
     include_input_csv: bool,
     input_csv_required: bool = False,
     include_consensus_options: bool = False,
+    consensus_group: argparse._ArgumentGroup | None = None,
 ) -> None:
     if include_input_csv:
         if input_csv_required:
@@ -737,16 +756,41 @@ def _configure_vcf_parser(
         ),
     )
     analysis_group.add_argument(
+        "--local-csq",
+        action="store_true",
+        default=False,
+        help=(
+            "Pass bcftools csq the -l/--local-csq flag, so each variant is "
+            "annotated on its own rather than jointly with nearby co-occurring "
+            "variants ('joint_*' consequence types). Off by default, since "
+            "joint calling is the correct behaviour for genuinely linked "
+            "variants (e.g. adjacent-codon changes on the same haplotype). "
+            "Consider enabling this for datasets with many unphased, "
+            "sub-consensus variants clustered in the same gene, where "
+            "bcftools has no genotype evidence that co-occurring variants are "
+            "actually on the same haplotype and joint calling can otherwise "
+            "fragment a single variant's presence/absence trajectory across "
+            "samples."
+        ),
+    )
+    analysis_group.add_argument(
         "-d",
         "--min-depth",
         action="store",
         required=False,
         type=int,
         default=10,
-        help="Minimum depth threshold for variant QC (default: 10)",
+        help=(
+            "Minimum depth threshold for variant QC (default: 10). Below "
+            "this depth at a sample, genuine absence of a variant cannot be "
+            "distinguished from dropout/non-detection; that sample is "
+            "flagged 'F' in the per_sample_variant_qc output column rather "
+            "than treated as confident absence."
+        ),
     )
     if include_consensus_options:
-        analysis_group.add_argument(
+        group = consensus_group or analysis_group
+        group.add_argument(
             "--consensus-snp-min-af",
             action="store",
             required=False,
@@ -757,7 +801,7 @@ def _configure_vcf_parser(
                 "considered for consensus (default: 0.25)"
             ),
         )
-        analysis_group.add_argument(
+        group.add_argument(
             "--consensus-snp-thresh",
             action="store",
             required=False,
@@ -768,7 +812,7 @@ def _configure_vcf_parser(
                 "consensus base (default: 0.75)"
             ),
         )
-        analysis_group.add_argument(
+        group.add_argument(
             "--consensus-indel-thresh",
             action="store",
             required=False,
@@ -782,6 +826,31 @@ def _configure_vcf_parser(
         type=int,
         help="Only analyse samples with sample_number less than or equal to this value",
         default=None,
+    )
+    analysis_group.add_argument(
+        "--max-plot-genes",
+        action="store",
+        type=int,
+        default=30,
+        help=(
+            "Cap the gene-wise summary FIGURE to the top N genes, ranked by "
+            "number of newly emerged variants (total variants used as a "
+            "tiebreak). Does not affect the tabular/TSV output, which always "
+            "includes every annotated gene. Overridden by --plot-genes. "
+            "(default: 30)"
+        ),
+    )
+    analysis_group.add_argument(
+        "--plot-genes",
+        action="store",
+        default=None,
+        help=(
+            "Comma-separated gene names, or a path to a file with one gene "
+            "name per line, to show on the gene-wise summary FIGURE. "
+            "Overrides --max-plot-genes. Genes absent from the reference "
+            "annotation or with no variants in this dataset are skipped "
+            "with a warning."
+        ),
     )
     analysis_group.add_argument(
         "--literature-csv",
@@ -1034,6 +1103,7 @@ In BAM mode the `bam` column must point to existing files while `reads1`,
         include_input_csv=True,
         input_csv_required=False,
         include_consensus_options=True,
+        consensus_group=snk_group,
     )
     _move_action_group_after(
         bam_parser, "Snakemake options", "Vartracker Analysis Options"
@@ -1463,6 +1533,21 @@ def _add_plot_heatmap_subparser(subparsers):
     _add_heatmap_option_arguments(
         heatmap_group, prefix="", add_legacy_prefixed_aliases=True
     )
+    output_group = parser.add_argument_group("Output")
+    output_group.add_argument(
+        "--out",
+        default=None,
+        help=(
+            "Write the heatmap using this path as the base name (extension, if "
+            "any, is ignored) - e.g. --out plots/myheatmap writes "
+            "plots/myheatmap.pdf and plots/myheatmap.html"
+        ),
+    )
+    output_group.add_argument(
+        "--outdir",
+        default=None,
+        help="Output directory for heatmap files (default: beside results.csv)",
+    )
     parser.set_defaults(handler=_run_plot_heatmap_command)
 
 
@@ -1645,7 +1730,10 @@ def _add_plot_genome_subparser(subparsers):
         "--persistent-only",
         action="store_true",
         default=False,
-        help="Only include variants with persistence_status == new_persistent",
+        help=(
+            "Only include new variants present at the final timepoint "
+            "(persistence_status new_persistent or new_intermittent)"
+        ),
     )
     filter_group.add_argument(
         "--new-only",
@@ -2148,6 +2236,7 @@ def _add_e2e_subparser(subparsers):
         e2e_parser,
         include_input_csv=False,
         include_consensus_options=True,
+        consensus_group=snk_group,
     )
     _move_action_group_after(
         e2e_parser, "Snakemake options", "Vartracker Analysis Options"
@@ -2221,6 +2310,15 @@ def _run_e2e_command(args):
             snakemake_input,
             optional_empty={"bam", "vcf", "coverage", "reads2"},
         )
+
+        if not args.primer_bed:
+            print(
+                "\033[93mWarning:\033[0m no --primer-bed supplied. If this data was "
+                "generated with amplicon sequencing, primer-binding sites will not "
+                "be clipped and may produce spurious variant calls near "
+                "primer-overlap regions. If your library prep is not amplicon-based, "
+                "this does not apply and can be ignored."
+            )
 
         print(get_logo())
 
@@ -2473,7 +2571,15 @@ def _run_plot_heatmap_command(args):
         if not results_csv.exists():
             raise InputValidationError(f"Results CSV not found: {results_csv}")
 
-        outdir = results_csv.parent
+        filename_stem = "variant_allele_frequency_heatmap"
+        if args.out:
+            out_path = Path(args.out).expanduser().resolve()
+            outdir = out_path.parent
+            filename_stem = out_path.stem or filename_stem
+        elif args.outdir:
+            outdir = Path(args.outdir).expanduser().resolve()
+        else:
+            outdir = results_csv.parent
         outdir.mkdir(parents=True, exist_ok=True)
 
         table = pd.read_csv(results_csv, keep_default_na=False)
@@ -2541,9 +2647,13 @@ def _run_plot_heatmap_command(args):
             plot_title=args.title,
             literature_hits=literature_df,
             literature_table_path=literature_path,
+            filename_stem=filename_stem,
             **_collect_heatmap_kwargs(args),
         )
-        print(f"\nFinished: find results in {outdir}\n")
+        print(
+            f"\nFinished: wrote {outdir / f'{filename_stem}.pdf'} and "
+            f"{outdir / f'{filename_stem}.html'}\n"
+        )
         return 0
     except (InputValidationError, ProcessingError) as exc:
         print(f"\nERROR: {exc}\n")
@@ -2723,6 +2833,7 @@ def _process_files(
             args.gff3,
             args.debug,
             args.multiallelic_overflow,
+            local_csq=args.local_csq,
         )
 
         # Process VCF and extract variants
@@ -2782,8 +2893,21 @@ def _process_files(
         os.path.join(args.outdir, "cumulative_mutations.pdf"),
     )
 
-    gene_table = generate_gene_table(table, gene_lengths)
-    plot_gene_table(gene_table, pname, args.outdir)
+    ambiguous_genes = None
+    if gene_lengths is not None and getattr(args, "gff3", None):
+        ambiguous_genes = ambiguous_gene_names(args.gff3)
+    plot_genes = None
+    if getattr(args, "plot_genes", None):
+        plot_genes = parse_plot_genes_arg(args.plot_genes)
+
+    gene_table = generate_gene_table(table, gene_lengths, ambiguous_genes)
+    plot_gene_table(
+        gene_table,
+        pname,
+        args.outdir,
+        max_plot_genes=getattr(args, "max_plot_genes", 30),
+        plot_genes=plot_genes,
+    )
     plot_variant_turnover(
         *apply_shared_plot_filters(
             *prepare_plot_inputs(table)[:2],
@@ -2822,9 +2946,11 @@ def _process_files(
     ].reset_index(drop=True)
     new_mutations.to_csv(os.path.join(args.outdir, "new_mutations.csv"), index=None)
 
-    persistent_mutations = table[table.persistence_status == "new_persistent"][
-        ["gene", "variant", "amino_acid_consequence", "nsp_aa_change"]
-    ].reset_index(drop=True)
+    persistent_mutations = table[
+        table.persistence_status.isin(NEW_ENDS_PRESENT_STATUSES)
+    ][["gene", "variant", "amino_acid_consequence", "nsp_aa_change"]].reset_index(
+        drop=True
+    )
     persistent_mutations.to_csv(
         os.path.join(args.outdir, "persistent_new_mutations.csv"), index=None
     )
