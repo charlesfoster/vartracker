@@ -2,6 +2,7 @@
 """Simulate longitudinal VCF + coverage data against the PAO1 reference bundle
 for vartracker bacterial-scale validation (Scenario A ~80 variants, Scenario B ~1000).
 """
+
 import argparse
 import subprocess
 import sys
@@ -63,11 +64,13 @@ def zipf_weights(n, rng, exponent=1.1):
     order = rng.permutation(n)
     ranks = np.empty(n, dtype=float)
     ranks[order] = np.arange(1, n + 1)
-    w = 1.0 / (ranks ** exponent)
+    w = 1.0 / (ranks**exponent)
     return w / w.sum()
 
 
-def choose_positions(cds_list, n_variants, ref_seq, rng, indel_fraction=0.08, biased=False):
+def choose_positions(
+    cds_list, n_variants, ref_seq, rng, indel_fraction=0.08, biased=False
+):
     """Pick n_variants distinct (pos, ref, alt, gene, var_type) tuples from CDS regions."""
     genes = np.array([c["gene"] for c in cds_list])
     unique_genes, gene_index = np.unique(genes, return_inverse=True)
@@ -115,7 +118,7 @@ def choose_positions(cds_list, n_variants, ref_seq, rng, indel_fraction=0.08, bi
                 ref, alt, var_type = ref_base, ref_base + inserted, "indel"
             else:
                 # deletion: anchor base + (span) deleted ref bases
-                del_seq = ref_seq[pos - 1: pos - 1 + span + 1]
+                del_seq = ref_seq[pos - 1 : pos - 1 + span + 1]
                 if len(del_seq) < span + 1 or any(b not in BASES for b in del_seq):
                     continue
                 ref, alt, var_type = del_seq, del_seq[0], "indel"
@@ -148,31 +151,58 @@ def gen_presence_af(pattern, var_type, rng):
     if pattern == "original_retained":
         present = [True] * N_TIMEPOINTS
         base = rng.uniform(0.2, 0.5)
-        af_vals = [np.clip(base + rng.uniform(-0.05, 0.05), af_floor, af_ceiling) for _ in range(N_TIMEPOINTS)]
+        af_vals = [
+            np.clip(base + rng.uniform(-0.05, 0.05), af_floor, af_ceiling)
+            for _ in range(N_TIMEPOINTS)
+        ]
 
     elif pattern == "original_lost":
         last_present = int(rng.integers(1, 5))  # 1..4 inclusive -> absent by tp5
         present = [i <= last_present for i in range(N_TIMEPOINTS)]
         n_present = last_present + 1
-        af_vals = list(np.clip(np.linspace(0.55, 0.15, n_present) + rng.uniform(-0.03, 0.03, n_present), af_floor, af_ceiling))
+        af_vals = list(
+            np.clip(
+                np.linspace(0.55, 0.15, n_present)
+                + rng.uniform(-0.03, 0.03, n_present),
+                af_floor,
+                af_ceiling,
+            )
+        )
 
     elif pattern == "new_persistent":
         first_present = int(rng.integers(1, 5))  # 1..4
         present = [i >= first_present for i in range(N_TIMEPOINTS)]
         n_present = N_TIMEPOINTS - first_present
-        af_vals = list(np.clip(np.linspace(0.12, 0.85, n_present) + rng.uniform(-0.03, 0.03, n_present), af_floor, af_ceiling))
+        af_vals = list(
+            np.clip(
+                np.linspace(0.12, 0.85, n_present)
+                + rng.uniform(-0.03, 0.03, n_present),
+                af_floor,
+                af_ceiling,
+            )
+        )
 
     elif pattern == "new_transient":
         first_present = int(rng.integers(1, 4))  # 1..3
-        last_present = int(rng.integers(first_present, min(first_present + 3, 5)))  # < 5
+        last_present = int(
+            rng.integers(first_present, min(first_present + 3, 5))
+        )  # < 5
         present = [first_present <= i <= last_present for i in range(N_TIMEPOINTS)]
         n_present = last_present - first_present + 1
         base = rng.uniform(0.15, 0.4)
-        af_vals = list(np.clip([base + rng.uniform(-0.05, 0.05) for _ in range(n_present)], af_floor, af_ceiling))
+        af_vals = list(
+            np.clip(
+                [base + rng.uniform(-0.05, 0.05) for _ in range(n_present)],
+                af_floor,
+                af_ceiling,
+            )
+        )
 
     elif pattern == "original_intermittent":
         gap_start = int(rng.integers(1, 4))  # 1..3
-        gap_len = int(rng.integers(1, 5 - gap_start))  # keep gap inside 1..4, tp5 stays present
+        gap_len = int(
+            rng.integers(1, 5 - gap_start)
+        )  # keep gap inside 1..4, tp5 stays present
         present = [True] * N_TIMEPOINTS
         for i in range(gap_start, min(gap_start + gap_len, 5)):
             present[i] = False
@@ -180,7 +210,13 @@ def gen_presence_af(pattern, var_type, rng):
         present[5] = True
         n_present = sum(present)
         base = rng.uniform(0.2, 0.45)
-        af_vals = list(np.clip([base + rng.uniform(-0.05, 0.05) for _ in range(n_present)], af_floor, af_ceiling))
+        af_vals = list(
+            np.clip(
+                [base + rng.uniform(-0.05, 0.05) for _ in range(n_present)],
+                af_floor,
+                af_ceiling,
+            )
+        )
 
     elif pattern == "new_intermittent":
         first_present = int(rng.integers(1, 3))  # 1..2
@@ -195,7 +231,13 @@ def gen_presence_af(pattern, var_type, rng):
         present[5] = True
         n_present = sum(present)
         base = rng.uniform(0.15, 0.4)
-        af_vals = list(np.clip([base + rng.uniform(-0.05, 0.05) for _ in range(n_present)], af_floor, af_ceiling))
+        af_vals = list(
+            np.clip(
+                [base + rng.uniform(-0.05, 0.05) for _ in range(n_present)],
+                af_floor,
+                af_ceiling,
+            )
+        )
 
     else:
         raise ValueError(pattern)
@@ -205,7 +247,12 @@ def gen_presence_af(pattern, var_type, rng):
         assert present[0] is True
     else:
         assert present[0] is False
-    if pattern in ("original_retained", "new_persistent", "original_intermittent", "new_intermittent"):
+    if pattern in (
+        "original_retained",
+        "new_persistent",
+        "original_intermittent",
+        "new_intermittent",
+    ):
         assert present[5] is True
     else:
         assert present[5] is False
@@ -221,7 +268,11 @@ def assign_patterns(n, rng):
     for target in ("original_intermittent", "new_intermittent"):
         count = patterns.count(target)
         if count < MIN_INTERMITTENT:
-            donor_pool = [i for i, p in enumerate(patterns) if p not in ("original_intermittent", "new_intermittent")]
+            donor_pool = [
+                i
+                for i, p in enumerate(patterns)
+                if p not in ("original_intermittent", "new_intermittent")
+            ]
             n_needed = MIN_INTERMITTENT - count
             idx_to_convert = rng.choice(donor_pool, size=n_needed, replace=False)
             for idx in idx_to_convert:
@@ -229,7 +280,9 @@ def assign_patterns(n, rng):
     return patterns
 
 
-def simulate_scenario(name, n_variants, cds_list, contig, ref_seq, seed, biased, outdir: Path):
+def simulate_scenario(
+    name, n_variants, cds_list, contig, ref_seq, seed, biased, outdir: Path
+):
     rng = np.random.default_rng(seed)
     variants = choose_positions(cds_list, n_variants, ref_seq, rng, biased=biased)
     for v in variants:
@@ -270,13 +323,17 @@ def simulate_scenario(name, n_variants, cds_list, contig, ref_seq, seed, biased,
             fh.write("##fileformat=VCFv4.2\n")
             fh.write(f"##contig=<ID={contig}>\n")
             fh.write('##INFO=<ID=DP,Number=1,Type=Integer,Description="Raw Depth">\n')
-            fh.write('##INFO=<ID=AF,Number=1,Type=Float,Description="Allele Frequency">\n')
+            fh.write(
+                '##INFO=<ID=AF,Number=1,Type=Float,Description="Allele Frequency">\n'
+            )
             fh.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
             for r in rows:
                 af_val = r["af"][tp]
                 dp_val = r["dp"][tp]
                 qual = 60
-                fh.write(f"{r['chrom']}\t{r['pos']}\t.\t{r['ref']}\t{r['alt']}\t{qual}\tPASS\tDP={dp_val};AF={af_val}\n")
+                fh.write(
+                    f"{r['chrom']}\t{r['pos']}\t.\t{r['ref']}\t{r['alt']}\t{qual}\tPASS\tDP={dp_val};AF={af_val}\n"
+                )
 
         final_gz = vcf_dir / f"pao1_tp{tp}.vcf.gz"
         sort_cmd = f"bcftools sort -Ov {raw_path} 2>/dev/null | bgzip > {final_gz}"
@@ -315,7 +372,9 @@ def simulate_scenario(name, n_variants, cds_list, contig, ref_seq, seed, biased,
                 "reads2": "",
                 "bam": "",
                 "vcf": str((vcf_dir / f"pao1_tp{tp}.vcf.gz").resolve()),
-                "coverage": str((outdir.parent / "coverage" / f"pao1_tp{tp}_depth.txt").resolve()),
+                "coverage": str(
+                    (outdir.parent / "coverage" / f"pao1_tp{tp}_depth.txt").resolve()
+                ),
             }
         )
     pd.DataFrame(csv_rows).to_csv(outdir / f"{name}_input.csv", index=False)
@@ -323,7 +382,9 @@ def simulate_scenario(name, n_variants, cds_list, contig, ref_seq, seed, biased,
     # summary counts
     pattern_counts = pd.Series([r["pattern"] for r in records]).value_counts()
     gene_counts = pd.Series([r["gene"] for r in records]).value_counts()
-    print(f"[{name}] {len(records)} distinct variants placed across {gene_counts.shape[0]} genes")
+    print(
+        f"[{name}] {len(records)} distinct variants placed across {gene_counts.shape[0]} genes"
+    )
     print(f"[{name}] pattern mix:\n{pattern_counts}")
     print(f"[{name}] top genes by variant count:\n{gene_counts.head(10)}")
     return records
@@ -359,10 +420,24 @@ def main():
     generate_coverage(contig, len(ref_seq), base / "coverage")
 
     simulate_scenario(
-        "scenario_a", 80, cds_list, contig, ref_seq, seed=42, biased=False, outdir=base / "scenario_a"
+        "scenario_a",
+        80,
+        cds_list,
+        contig,
+        ref_seq,
+        seed=42,
+        biased=False,
+        outdir=base / "scenario_a",
     )
     simulate_scenario(
-        "scenario_b", 1000, cds_list, contig, ref_seq, seed=43, biased=True, outdir=base / "scenario_b"
+        "scenario_b",
+        1000,
+        cds_list,
+        contig,
+        ref_seq,
+        seed=43,
+        biased=True,
+        outdir=base / "scenario_b",
     )
 
 

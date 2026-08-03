@@ -13,8 +13,6 @@ import seaborn as sns
 from vartracker.analysis import (
     _build_variant_key,
     _heatmap_figure_size,
-    disambiguate_base_label,
-    find_colliding_base_labels,
     search_literature,
     _prepare_variant_heatmap_matrix,
     process_joint_variants,
